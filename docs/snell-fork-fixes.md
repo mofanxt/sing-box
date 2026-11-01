@@ -1,32 +1,27 @@
-# Snell UDP 与连接池修复分支
+# Snell 修复版（v1.14.4-mofanxt.1）
 
-本分支基于 sing-box v1.14.4，通过 `go.mod` 的固定版本替换引用
-`github.com/mofanxt/sing-snell` 提交 `8e985c41e9f58edf0d68e9280de8d5040adcc784`。
-无需本地补丁目录或相邻源码目录即可构建。
+本分支基于 sing-box v1.14.4，只修改 `go.mod`/`go.sum`，用固定版本替换引用
+`github.com/mofanxt/sing-snell` 的 main 分支提交 `88716887dc7a`，不改动 sing-box 本身的代码。
+该提交合并了下列修复，每组都已向上游 SagerNet/sing-snell 提交独立 PR。
 
-## 包含的修复
+| 上游 PR | 修复 |
+| --- | --- |
+| [#9](https://github.com/SagerNet/sing-snell/pull/9) | 复用前探测空闲会话的底层连接，丢弃被 FIN/RST 的死会话；连接池改为优先复用最近归还的会话 |
+| [#10](https://github.com/SagerNet/sing-snell/pull/10) | v4 客户端/v5 服务端 UDP：读缓冲不再截断超过 1162/1402 字节的数据报（QUIC/HTTP/3），低内存构建同样覆盖；UDP 包不再受 TCP 分帧窗口限制，空闲后的大包不会中断会话；批量写入在加密前校验整批长度 |
+| [#11](https://github.com/SagerNet/sing-snell/pull/11) | 复用连接关闭后的迟到写入返回错误，不再写进已归还或被下一条连接使用的会话；修复 writer 数据竞争；阻塞写入时 `Close` 不再卡住 |
+| [#12](https://github.com/SagerNet/sing-snell/pull/12) | v5/v6 服务端丢弃域名源地址的 UDP 回包，不再中断整个 UDP 会话 |
+| [#13](https://github.com/SagerNet/sing-snell/pull/13) | 客户端 TCP 流未收到 zero chunk 即断开时报 `io.ErrUnexpectedEOF`，复用模式不再把死会话放回池；所有 reader 在记录中途断开时报异常 EOF |
 
-- `aaf6998`：复用前检测底层连接，丢弃已断开的空闲会话；覆盖 v4/v6 和 obfs。
-- `082b10f`：连接池优先复用最近归还的会话，减少取到老旧连接的机会。
-- `8e985c4`：v4 客户端与 v5 服务端为 UDP 转发保留完整数据报的读取空间。
-  原来的 1162/1402 字节提示会让转发层的缓冲区过小，造成静默截断。
-  写入端原有记录长度检查继续生效，超限数据报返回错误；不改变协议格式或 TCP 帧处理。
-
-读取空间采用 `buf.UDPBufferSize`，增加了受影响转发路径的单个包缓冲容量。
-这不表示 Snell 能传输任意大小的 UDP 数据报；协议记录上限仍由写入端强制校验。
+写入端仍按协议上限拒绝超限 UDP 包；协议格式不变。UDP 复制路径的单包读缓冲变大（Linux 64 包批量约 2 MiB/方向），
+与 sing 对未声明 MTU 的写入端的默认分配一致。
 
 ## 验证
 
 ```sh
-go test -race github.com/sagernet/sing-snell/...
-go test ./protocol/snell
 go build -tags with_quic,with_clash_api ./cmd/sing-box
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags with_quic,with_clash_api ./cmd/sing-box
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags "$(cat release/DEFAULT_BUILD_TAGS),with_purego" ./cmd/sing-box
 ```
 
-依赖中的回归覆盖正向 1000–2000 字节、反向 1200–2000 字节、18000 字节超限报错，以及
-FIN/RST 空闲会话恢复和 LIFO。恢复旧 UDP 实现时，正向 1200 字节及反向 1403 字节用例失败。
-原依赖版本和 sing-box 实际使用的 sing 版本均运行竞态检查。
-
-本机隔离 sing-box 实例以 SOCKS → Snell v4 → Snell v5 → 阿里 DoH3 路径完成三次
-证书验证、ALPN h3、HTTP 200 和 DNS 响应校验。该结果不替代生产环境部署后的验收。
+sing-snell 侧：新增回归测试在未修复的上游 main 上均失败；`make lint` 四平台 0 问题；Go 1.25/1.26/1.27 的 `-race`
+测试通过（含 `with_low_memory`）；与官方 snell-server v6.0.0rc（amd64）及 v4.1.1、v5.0.1（linux-aarch64 官方构建）的
+Docker 互通测试全部通过。两轮独立代码审查的最终结论为无需修复。
