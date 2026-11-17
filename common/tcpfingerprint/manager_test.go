@@ -230,3 +230,24 @@ func TestShadowrocketTFOCapture(t *testing.T) {
 		}
 	}
 }
+
+func TestExitMSSUsesIndependentPath(t *testing.T) {
+	p := linuxSYN()
+	f := appleFP()
+	binary.BigEndian.PutUint16(f.Options[2:4], 1380)
+	out, err := Rewrite(p, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.BigEndian.Uint16(out[42:44]); got != 1460 {
+		t.Fatalf("outer tunnel MSS leaked into exit: %d", got)
+	}
+	binary.BigEndian.PutUint16(p[42:44], 1360)
+	out, err = Rewrite(p, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.BigEndian.Uint16(out[42:44]); got != 1360 {
+		t.Fatalf("exit path MSS exceeded: %d", got)
+	}
+}

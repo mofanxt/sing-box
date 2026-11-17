@@ -265,7 +265,7 @@ func checksum(parts ...[]byte) uint16 {
 	return ^uint16(sum)
 }
 
-// Rewrite保留本次内核生成的序列号和时间戳，且不扩大原始MSS。
+// Rewrite保留本次内核的序列号、时间戳及出口MSS；代理两侧独立协商路径限制。
 func Rewrite(p []byte, f *snell.TCPFingerprint) ([]byte, error) {
 	// 输出改写只处理无负载SYN，不能丢弃内核TFO中的真实应用数据。
 	if len(p) < 40 || int(binary.BigEndian.Uint16(p[2:4])) != 20+int(p[32]>>4)*4 {
@@ -291,9 +291,9 @@ func Rewrite(p []byte, f *snell.TCPFingerprint) ([]byte, error) {
 		}
 		switch k {
 		case 2:
-			if binary.BigEndian.Uint16(v[2:]) > binary.BigEndian.Uint16(u[2:]) {
-				copy(v[2:], u[2:])
-			}
+			// MSS依赖本段路径，不能把手机到入口的隧道MTU当作出口路径限制。
+			// 此值始终等于出口内核原值，绝不高于该socket的路径能力。
+			copy(v[2:], u[2:])
 		case 3:
 			if v[2] != u[2] {
 				return nil, fmt.Errorf("kernel window scale mismatch")
