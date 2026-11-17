@@ -1,6 +1,6 @@
 # 实验性 TCP 指纹透传
 
-开发基线为上游 testing 021950077be86ea2c3aa72f1256238f08e9b9944，即用户指定的最新开发主干，不是稳定版。默认关闭，需搭配支持私有扩展的 sing-snell。当前仅验证隔离实验，不能当作生产已上线。
+开发基线为上游 testing 021950077be86ea2c3aa72f1256238f08e9b9944，即用户指定的最新开发主干，不是稳定版。默认关闭，需搭配支持私有扩展的 sing-snell。生产验收及逐机状态由部署方单独记录；本文件说明协议和实现边界。
 
 ## 配置入口
 
@@ -13,11 +13,11 @@
 
 ## 内核出口
 
-Linux需CAP_NET_RAW和CAP_NET_ADMIN以及nft工具。仅专用SO_MARK高16位为队列编号（默认0x4c3e）的IPv4 SYN进入独占NFQUEUE；不允许与已有routing mark、TFO、MPTCP或多接口策略混用。保留本连接序列号、时间戳数值并重算校验和；MSS不得超过实际内核值。
+Linux需CAP_NET_RAW和CAP_NET_ADMIN以及nft工具。仅专用SO_MARK高16位为队列编号（默认0x4c3e）的IPv4 SYN进入独占NFQUEUE；不允许与冲突的routing mark、MPTCP或未经验证的多接口策略混用。保留本连接序列号、时间戳数值并重算校验和；MSS使用该出站内核原值，不继承入口隧道的较小MSS，也绝不超过出口内核值。
 
 启动时用本机回环握手校准SO_RCVBUFFORCE与实际窗口缩放的关系，申请值上限16MiB（Linux内部缓冲计数可能加倍），不修改系统sysctl。找不到匹配缩放、模板容量已满、缺失样本时回退原生行为；实际SYN缩放再次校验，绝不只改报文数字。校准表只在启动时生成；运行中调整相关内核参数可能使样本跳过。
 
-只支持IPv4、无IP选项/分片/ECN/SYN负载和受支持TCP选项。IPv6、QUIC/HTTP3、完整TCP行为、TLS/JA3/JA4、操作系统判定和风控效果不在承诺范围。本版本使用NFQUEUE，不是eBPF。
+只支持IPv4、无IP选项/分片和受支持TCP选项。采集支持普通或RFC3168 ECN协商SYN；TFO选项及服务器专属cookie在采集阶段移除，保留其余选项。TFO早期数据只允许首部采集，不保存或传递负载；出口任何带负载的SYN都不改写。IPv6、QUIC/HTTP3、完整TCP行为、TLS/JA3/JA4、操作系统判定和风控效果不在承诺范围。本版本使用NFQUEUE，不是eBPF。
 
 正常关闭删除自有nft表，队列fail-open。异常退出可能留下 `inet sbox_tcp_fingerprint_19518` 空闲表；服务再启动拒绝覆盖已有表，需先确认拥有者及残留来源再处理。不得删除其他实例的表或队列。
 
