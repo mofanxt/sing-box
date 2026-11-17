@@ -179,16 +179,59 @@ func parseOptions(b []byte) map[byte][]byte {
 	return result
 }
 
+// captureOptions移除只对原服务器有效的TFO cookie；其余选项仍严格校验。
+func captureOptions(raw []byte) ([]byte, bool, error) {
+	out := make([]byte, 0, len(raw))
+	tfo := false
+	for i := 0; i < len(raw); {
+		k := raw[i]
+		if k == 0 {
+			out = append(out, raw[i:]...)
+			break
+		}
+		if k == 1 {
+			out = append(out, k)
+			i++
+			continue
+		}
+		if i+2 > len(raw) || raw[i+1] < 2 || i+int(raw[i+1]) > len(raw) {
+			return nil, false, fmt.Errorf("invalid TCP option length")
+		}
+		n := int(raw[i+1])
+		if k == 34 {
+			if tfo || (n != 2 && (n < 6 || n > 18 || n%2 != 0)) {
+				return nil, false, fmt.Errorf("invalid TFO option")
+			}
+			tfo = true
+		} else {
+			out = append(out, raw[i:i+n]...)
+		}
+		i += n
+	}
+	for len(out)%4 != 0 {
+		out = append(out, 0)
+	}
+	return out, tfo, nil
+}
+
 // FromIPv4接收普通SYN及RFC 3168的ECN协商SYN；ECN仍由出口内核协商。
 func FromIPv4(p []byte) (*snell.TCPFingerprint, error) {
 	if len(p) < 40 || p[0] != 0x45 || p[9] != 6 || binary.BigEndian.Uint16(p[6:8]) != 0x4000 || (p[33] != 2 && p[33] != 0xc2) {
 		return nil, fmt.Errorf("unsupported SYN")
 	}
 	n := int(p[32]>>4) * 4
-	if n < 20 || n > 60 || len(p) < 20+n || int(binary.BigEndian.Uint16(p[2:4])) != 20+n {
+	if n < 20 || n > 60 || len(p) < 20+n || int(binary.BigEndian.Uint16(p[2:4])) < 20+n {
 		return nil, fmt.Errorf("SYN with payload or invalid length")
 	}
-	f := &snell.TCPFingerprint{Window: binary.BigEndian.Uint16(p[34:36]), ZeroIPID: binary.BigEndian.Uint16(p[4:6]) == 0, Options: append([]byte(nil), p[40:20+n]...)}
+	options, tfo, err := captureOptions(p[40 : 20+n])
+	if err != nil {
+		return nil, err
+	}
+	// 仅TFO连接允许初始数据；采集器只取首部，绝不传递或保存数据。
+	if int(binary.BigEndian.Uint16(p[2:4])) != 20+n && !tfo {
+		return nil, fmt.Errorf("SYN payload without TFO")
+	}
+	f := &snell.TCPFingerprint{Window: binary.BigEndian.Uint16(p[34:36]), ZeroIPID: binary.BigEndian.Uint16(p[4:6]) == 0, Options: options}
 	for _, ttl := range []byte{32, 64, 128, 255} {
 		if p[8] <= ttl {
 			f.TTL = ttl
@@ -224,6 +267,10 @@ func checksum(parts ...[]byte) uint16 {
 
 // Rewrite保留本次内核生成的序列号和时间戳，且不扩大原始MSS。
 func Rewrite(p []byte, f *snell.TCPFingerprint) ([]byte, error) {
+	// 输出改写只处理无负载SYN，不能丢弃内核TFO中的真实应用数据。
+	if len(p) < 40 || int(binary.BigEndian.Uint16(p[2:4])) != 20+int(p[32]>>4)*4 {
+		return nil, fmt.Errorf("cannot rewrite SYN payload")
+	}
 	if _, err := FromIPv4(p); err != nil {
 		return nil, err
 	}

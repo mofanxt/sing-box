@@ -178,3 +178,55 @@ func TestIPhoneECNCapture(t *testing.T) {
 		}
 	}
 }
+
+// Shadowrocket的外层连接携带TFO请求，不能因私有cookie而丢弃整份设备特征。
+func TestShadowrocketTFOCapture(t *testing.T) {
+	for _, cookie := range []int{0, 4, 16} {
+		options := append([]byte(nil), appleFP().Options[:22]...)
+		options = append(options, 34, byte(cookie+2))
+		for i := 0; i < cookie; i++ {
+			options = append(options, 0xab)
+		}
+		for len(options)%4 != 0 {
+			options = append(options, 0)
+		}
+		p := make([]byte, 40+len(options))
+		copy(p, linuxSYN()[:40])
+		p[8] = 251
+		p[32] = byte((20+len(options))/4) << 4
+		p[33] = 0xc2
+		binary.BigEndian.PutUint16(p[2:4], uint16(len(p)))
+		binary.BigEndian.PutUint16(p[34:36], 65535)
+		copy(p[40:], options)
+		f, err := FromIPv4(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.TTL != 255 || f.Window != 65535 || parseOptions(f.Options)[3][2] != 6 || len(f.Options) != 24 {
+			t.Fatal("outer fingerprint lost")
+		}
+		if _, exists := parseOptions(f.Options)[34]; exists {
+			t.Fatal("server-specific cookie leaked")
+		}
+		encoded, err := f.MarshalBinary()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = snell.ParseTCPFingerprint(encoded); err != nil {
+			t.Fatal(err)
+		}
+		// 抓包只保存首部；即使TFO已经发送数据也仍能采集，但出口改写必须拒绝。
+		binary.BigEndian.PutUint16(p[2:4], uint16(len(p)+20))
+		if _, err = FromIPv4(p); err != nil {
+			t.Fatal("TFO data header capture failed", err)
+		}
+		if _, err = Rewrite(p, f); err == nil {
+			t.Fatal("rewrite accepted application payload")
+		}
+	}
+	for _, n := range []byte{3, 4, 5, 7, 19} {
+		if _, _, err := captureOptions([]byte{34, n, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}); err == nil {
+			t.Fatalf("accepted invalid TFO length %d", n)
+		}
+	}
+}
