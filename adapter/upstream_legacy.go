@@ -58,6 +58,11 @@ type legacyUpstreamHandlerWrapper struct {
 // Deprecated: use NewUpstreamHandler instead.
 func (w *legacyUpstreamHandlerWrapper) NewConnection(ctx context.Context, conn net.Conn, metadata M.Metadata) error {
 	myMetadata := w.metadata
+	// 在协议解析及多路复用之前保留入口已验证的物理连接特征。
+	if original := ContextFrom(ctx); original != nil {
+		myMetadata.TCPFingerprint = original.TCPFingerprint.Clone()
+		myMetadata.OriginDestination = original.OriginDestination
+	}
 	if metadata.Source.IsValid() {
 		myMetadata.Source = metadata.Source
 	}

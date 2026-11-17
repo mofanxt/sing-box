@@ -125,7 +125,7 @@ func (m *Manager) start() error {
 	if err != nil {
 		return err
 	}
-	rules := fmt.Sprintf("create table inet %s\nadd chain inet %s post { type filter hook postrouting priority 110; policy accept; }\nadd rule inet %s post ip protocol tcp tcp flags & (syn | ack) == syn meta mark & 0x%x == 0x%x counter queue num %d bypass\n", tableName, tableName, tableName, markMask, markPrefix, m.options.Queue)
+	rules := fmt.Sprintf("create table inet %s\nadd chain inet %s post { type filter hook postrouting priority 110; policy accept; }\nadd rule inet %s post ip protocol tcp tcp flags & (syn | ack) == syn meta mark & 0x%x == 0x%x counter queue num %d bypass\n", m.tableName(), m.tableName(), m.tableName(), markMask, m.markPrefix(), m.options.Queue)
 	cmd := exec.CommandContext(m.ctx, "nft", "-f", "-")
 	cmd.Stdin = strings.NewReader(rules)
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -135,7 +135,7 @@ func (m *Manager) start() error {
 	m.closers = append(m.closers, func() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		return exec.CommandContext(ctx, "nft", "delete", "table", "inet", tableName).Run()
+		return exec.CommandContext(ctx, "nft", "delete", "table", "inet", m.tableName()).Run()
 	})
 	m.logger.Info("tcp fingerprint: queue ready ", m.options.Queue)
 	return nil

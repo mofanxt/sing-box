@@ -35,6 +35,11 @@ type myUpstreamHandlerWrapper struct {
 
 func (w *myUpstreamHandlerWrapper) NewConnectionEx(ctx context.Context, conn net.Conn, source M.Socksaddr, destination M.Socksaddr, onClose N.CloseHandlerFunc) {
 	myMetadata := w.metadata
+	// 在协议解析及多路复用之前保留入口已验证的物理连接特征。
+	if original := ContextFrom(ctx); original != nil {
+		myMetadata.TCPFingerprint = original.TCPFingerprint.Clone()
+		myMetadata.OriginDestination = original.OriginDestination
+	}
 	if source.IsValid() {
 		myMetadata.Source = source
 	}

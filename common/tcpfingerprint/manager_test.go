@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sagernet/sing-box/option"
 	snell "github.com/sagernet/sing-snell"
 	M "github.com/sagernet/sing/common/metadata"
 )
@@ -130,4 +131,17 @@ func FuzzCapture(f *testing.F) {
 			_, _ = Rewrite(p, sample)
 		}
 	})
+}
+
+func TestQueueIsolation(t *testing.T) {
+	newManager := func(queue uint16) *Manager {
+		return &Manager{options: option.TCPFingerprintOptions{Queue: queue}, templates: make(map[uint32]*snell.TCPFingerprint), marks: make(map[string]uint32)}
+	}
+	a, b := newManager(19518), newManager(19519)
+	if a.tableName() == b.tableName() || a.templateMark(appleFP()) == b.templateMark(appleFP()) {
+		t.Fatal("independent cores share packet ownership")
+	}
+	if a.markPrefix()&markMask == b.markPrefix()&markMask {
+		t.Fatal("queue marks overlap")
+	}
 }

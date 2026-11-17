@@ -15,13 +15,22 @@ import (
 )
 
 const markMask uint32 = 0xffff0000
-const markPrefix uint32 = 0x574c0000
 const tableName = "sbox_tcp_fingerprint"
 
 type entry struct {
 	at          time.Time
 	fingerprint *snell.TCPFingerprint
 }
+
+// 同一网络命名空间的多个核心用不同队列隔离模板、socket标记和规则表。
+func (m *Manager) queue() uint16 {
+	if m.options.Queue == 0 {
+		return 19518
+	}
+	return m.options.Queue
+}
+func (m *Manager) markPrefix() uint32 { return uint32(m.queue()) << 16 }
+func (m *Manager) tableName() string  { return fmt.Sprintf("%s_%d", tableName, m.queue()) }
 
 func (m *Manager) Name() string { return "tcp-fingerprint" }
 
@@ -142,7 +151,7 @@ func (m *Manager) templateMark(f *snell.TCPFingerprint) uint32 {
 		return 0
 	}
 	m.next++
-	mark := markPrefix | m.next
+	mark := m.markPrefix() | m.next
 	m.marks[string(b)] = mark
 	m.templates[mark] = f.Clone()
 	return mark

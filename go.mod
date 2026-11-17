@@ -199,4 +199,4 @@ require (
 	zombiezen.com/go/capnproto2 v2.18.2+incompatible // indirect
 )
 
-replace github.com/sagernet/sing-snell => github.com/mofanxt/sing-snell v0.0.0-20261117143208-f1a6a45c9cf7
+replace github.com/sagernet/sing-snell => github.com/mofanxt/sing-snell v0.0.0-20261117143743-a034ab9c8d65

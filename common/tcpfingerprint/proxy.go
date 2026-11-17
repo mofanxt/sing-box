@@ -3,6 +3,7 @@ package tcpfingerprint
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/netip"
@@ -31,8 +32,10 @@ func ProxyHeader(source, destination M.Socksaddr, f *snell.TCPFingerprint) ([]by
 		if err != nil {
 			return nil, err
 		}
-		b = append(b, 0xe0, byte(len(data)>>8), byte(len(data)))
-		b = append(b, data...)
+		// HAProxy的TLV格式器遇NUL截断，内部头使用有版本的ASCII编码。
+		encoded := []byte("v1:" + hex.EncodeToString(data))
+		b = append(b, 0xe0, byte(len(encoded)>>8), byte(len(encoded)))
+		b = append(b, encoded...)
 	}
 	binary.BigEndian.PutUint16(b[14:16], uint16(len(b)-16))
 	return b, nil
@@ -58,6 +61,7 @@ func ReadProxyHeader(r io.Reader) (source, destination M.Socksaddr, f *snell.TCP
 	}
 	source = M.SocksaddrFrom(netip.AddrFrom4([4]byte(b[:4])), binary.BigEndian.Uint16(b[8:10]))
 	destination = M.SocksaddrFrom(netip.AddrFrom4([4]byte(b[4:8])), binary.BigEndian.Uint16(b[10:12]))
+	seenFingerprint := false
 	for b = b[12:]; len(b) > 0; {
 		if len(b) < 3 {
 			err = io.ErrUnexpectedEOF
@@ -71,11 +75,27 @@ func ReadProxyHeader(r io.Reader) (source, destination M.Socksaddr, f *snell.TCP
 			return
 		}
 		if kind == 0xe0 {
-			if f != nil {
+			if seenFingerprint {
 				err = fmt.Errorf("duplicate fingerprint proxy TLV")
 				return
 			}
-			f, err = snell.ParseTCPFingerprint(b[:n])
+			seenFingerprint = true
+			// HAProxy转发缺失样本时生成空TLV，空值表示未采集到指纹。
+			if n == 0 {
+				continue
+			}
+			data := b[:n]
+			if bytes.HasPrefix(data, []byte("v1:")) {
+				if n > 95 {
+					err = fmt.Errorf("oversized fingerprint TLV")
+					return
+				}
+				data, err = hex.DecodeString(string(data[3:]))
+				if err != nil {
+					return
+				}
+			}
+			f, err = snell.ParseTCPFingerprint(data)
 			if err != nil {
 				return
 			}

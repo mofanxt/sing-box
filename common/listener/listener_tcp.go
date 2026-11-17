@@ -141,6 +141,12 @@ func (l *Listener) loopTCPIn() {
 // 元数据头在独立连接协程读取，慢连接不会阻塞监听器接受下一条连接。
 func (l *Listener) handleFingerprintConnection(conn net.Conn, metadata adapter.InboundContext) {
 	metadata.TCPFingerprint = nil
+	if l.listenOptions.FingerprintOriginalDestination {
+		// DNAT入口用conntrack原始目标关联网卡上改写前的SYN，不按来源IP猜测。
+		if original, err := control.GetOriginalDestination(conn); err == nil && original.IsValid() {
+			metadata.OriginDestination = M.SocksaddrFromNetIP(original)
+		}
+	}
 	if cfg := l.listenOptions.FingerprintProxyProtocol; cfg != nil {
 		realSource := metadata.Source.Addr
 		trusted := false
@@ -173,7 +179,9 @@ func (l *Listener) handleFingerprintConnection(conn net.Conn, metadata adapter.I
 		}
 	}
 	ctx := log.ContextWithNewID(l.ctx)
-	ctx = adapter.WithContext(ctx, &metadata)
+	if metadata.TCPFingerprint != nil {
+		ctx = adapter.WithContext(ctx, &metadata)
+	}
 	l.logger.InfoContext(ctx, "inbound connection from ", metadata.Source)
 	l.connHandler.NewConnection(ctx, conn, metadata, nil)
 }

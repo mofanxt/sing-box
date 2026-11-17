@@ -324,6 +324,9 @@ func (d *DefaultDialer) DialContext(ctx context.Context, network string, address
 				}
 			}
 			if !address.IsIPv6() {
+				if d.fingerprint == nil {
+					return DialSlowContext(&d.dialer4, ctx, d.netns, network, address)
+				}
 				dialer := d.dialer4
 				if d.fingerprint != nil {
 					if metadata := adapter.ContextFrom(ctx); metadata != nil {

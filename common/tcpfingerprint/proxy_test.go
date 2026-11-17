@@ -34,3 +34,23 @@ func TestProxyHeaderIsolation(t *testing.T) {
 		t.Fatal("accepted oversized header")
 	}
 }
+
+// HAProxy为未采集到样本的连接输出空TLV，不能拒绝正常旧客户端。
+func TestEmptyProxyFingerprint(t *testing.T) {
+	s, d := M.ParseSocksaddr("192.0.2.1:1234"), M.ParseSocksaddr("192.0.2.2:443")
+	b, err := ProxyHeader(s, d, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b = append(b, 0xe0, 0, 0)
+	b[15] += 3
+	_, _, f, err := ReadProxyHeader(bytes.NewReader(b))
+	if err != nil || f != nil {
+		t.Fatalf("missing sample rejected: %v", err)
+	}
+	b = append(b, 0xe0, 0, 0)
+	b[15] += 3
+	if _, _, _, err = ReadProxyHeader(bytes.NewReader(b)); err == nil {
+		t.Fatal("duplicate empty TLV accepted")
+	}
+}
