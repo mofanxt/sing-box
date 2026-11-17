@@ -15,6 +15,8 @@ type DirectInboundOptions struct {
 }
 
 type _DirectOutboundOptions struct {
+	FingerprintProxyProtocol bool `json:"fingerprint_proxy_protocol,omitempty"`
+	TCPFingerprint           bool `json:"tcp_fingerprint,omitempty"`
 	DialerOptions
 	// Deprecated: Use Route Action instead
 	OverrideAddress string `json:"override_address,omitempty" schema:"omit"`

@@ -12,6 +12,7 @@ import (
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/common/listener"
+	"github.com/sagernet/sing-box/common/tcpfingerprint"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing-box/service/powerreport"
@@ -32,6 +33,7 @@ var (
 )
 
 type DefaultDialer struct {
+	fingerprint            *tcpfingerprint.Manager
 	dialer4                tfo.Dialer
 	dialer6                tfo.Dialer
 	udpDialer4             net.Dialer
@@ -239,9 +241,20 @@ func NewDefault(ctx context.Context, options option.DialerOptions) (*DefaultDial
 	if options.TCPMultiPath {
 		dialer4.SetMultipathTCP(true)
 	}
+	var fingerprint *tcpfingerprint.Manager
+	if options.ApplyTCPFingerprint {
+		fingerprint = service.FromContext[*tcpfingerprint.Manager](ctx)
+		if fingerprint == nil || !fingerprint.RewriteEnabled() {
+			return nil, E.New("tcp fingerprint rewriter is not enabled")
+		}
+		if options.TCPFastOpen || options.TCPMultiPath || options.NetNs != "" || networkStrategy != nil || options.RoutingMark != 0 || (networkManager != nil && (networkManager.AutoRedirectOutputMark() != 0 || networkManager.DefaultOptions().RoutingMark != 0)) {
+			return nil, E.New("tcp fingerprint conflicts with TFO, MPTCP, netns, multi-interface or routing marks")
+		}
+	}
 	tcpDialer4 := tfo.Dialer{Dialer: dialer4, DisableTFO: !options.TCPFastOpen}
 	tcpDialer6 := tfo.Dialer{Dialer: dialer6, DisableTFO: !options.TCPFastOpen}
 	return &DefaultDialer{
+		fingerprint:            fingerprint,
 		dialer4:                tcpDialer4,
 		dialer6:                tcpDialer6,
 		udpDialer4:             udpDialer4,
@@ -311,7 +324,13 @@ func (d *DefaultDialer) DialContext(ctx context.Context, network string, address
 				}
 			}
 			if !address.IsIPv6() {
-				return DialSlowContext(&d.dialer4, ctx, d.netns, network, address)
+				dialer := d.dialer4
+				if d.fingerprint != nil {
+					if metadata := adapter.ContextFrom(ctx); metadata != nil {
+						dialer.Control = control.Append(dialer.Control, d.fingerprint.Control(metadata.TCPFingerprint))
+					}
+				}
+				return DialSlowContext(&dialer, ctx, d.netns, network, address)
 			} else {
 				return DialSlowContext(&d.dialer6, ctx, d.netns, network, address)
 			}

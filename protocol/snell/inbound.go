@@ -86,9 +86,10 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 			return nil, err
 		}
 		serviceOptions := snellv6.ServerOptions{
-			PSK:     []byte(options.PSK),
-			Mode:    mode,
-			Handler: inbound,
+			PSK:         []byte(options.PSK),
+			Mode:        mode,
+			Handler:     inbound,
+			Fingerprint: options.V6Options.TCPFingerprint,
 		}
 		if len(options.Users) > 0 {
 			var service *snellv6.MultiService[int]
@@ -166,6 +167,10 @@ func (h *Inbound) NewPacketConnectionEx(ctx context.Context, conn N.PacketConn, 
 }
 
 func (h *Inbound) newConnection(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {
+	if f := snellprotocol.TCPFingerprintFromContext(ctx); f != nil {
+		metadata.TCPFingerprint = f
+	}
+	ctx = adapter.WithContext(ctx, &metadata)
 	metadata.Inbound = h.Tag()
 	metadata.InboundType = h.Type()
 	if len(h.users) > 0 {

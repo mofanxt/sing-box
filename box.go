@@ -16,6 +16,7 @@ import (
 	"github.com/sagernet/sing-box/common/httpclient"
 	"github.com/sagernet/sing-box/common/netns"
 	"github.com/sagernet/sing-box/common/taskmonitor"
+	"github.com/sagernet/sing-box/common/tcpfingerprint"
 	"github.com/sagernet/sing-box/common/tls"
 	"github.com/sagernet/sing-box/common/trafficcontrol"
 	"github.com/sagernet/sing-box/common/urltest"
@@ -185,6 +186,14 @@ func New(options Options) (*Box, error) {
 	service.MustRegister[log.Factory](ctx, logFactory)
 
 	var internalServices []adapter.LifecycleService
+	if experimentalOptions.TCPFingerprint != nil {
+		manager, err := tcpfingerprint.New(ctx, *experimentalOptions.TCPFingerprint, logFactory.NewLogger("tcp-fingerprint"))
+		if err != nil {
+			return nil, err
+		}
+		service.MustRegister[*tcpfingerprint.Manager](ctx, manager)
+		internalServices = append(internalServices, manager)
+	}
 	routeOptions := common.PtrValueOrDefault(options.Route)
 	certificateOptions := common.PtrValueOrDefault(options.Certificate)
 	if C.IsAndroid || certificateOptions.Store != "" && certificateOptions.Store != C.CertificateStoreSystem ||

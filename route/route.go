@@ -13,6 +13,7 @@ import (
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/common/interrupt"
 	"github.com/sagernet/sing-box/common/sniff"
+	"github.com/sagernet/sing-box/common/tcpfingerprint"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	R "github.com/sagernet/sing-box/route/rule"
@@ -28,6 +29,7 @@ import (
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/uot"
+	"github.com/sagernet/sing/service"
 )
 
 var defaultPacketSniffers = []sniff.PacketSniffer{
@@ -84,6 +86,17 @@ func (r *Router) routeConnection(ctx context.Context, conn net.Conn, metadata ad
 		metadata.InboundDetour = ""
 		injectable.NewConnection(ctx, conn, metadata, onClose)
 		return nil
+	}
+	if metadata.TCPFingerprint == nil {
+		// 旧协议适配器会重建metadata，保留当前物理连接已验证的采集值。
+		if original := adapter.ContextFrom(ctx); original != nil {
+			metadata.TCPFingerprint = original.TCPFingerprint.Clone()
+		}
+	}
+	if metadata.TCPFingerprint == nil {
+		if manager := service.FromContext[*tcpfingerprint.Manager](ctx); manager != nil {
+			metadata.TCPFingerprint = manager.Lookup(metadata.Source, metadata.Destination)
+		}
 	}
 	metadata.Network = N.NetworkTCP
 	switch metadata.Destination.Fqdn {

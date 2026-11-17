@@ -9,17 +9,29 @@ import (
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/common/redir"
+	"github.com/sagernet/sing-box/common/tcpfingerprint"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing/common/control"
 	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
+	"github.com/sagernet/sing/service"
 
 	"github.com/database64128/tfo-go/v2"
 )
 
 func (l *Listener) ListenTCP() (net.Listener, error) {
+	if cfg := l.listenOptions.FingerprintProxyProtocol; cfg != nil {
+		if len(cfg.TrustedSources) == 0 {
+			return nil, E.New("fingerprint proxy requires trusted_sources")
+		}
+		for _, s := range cfg.TrustedSources {
+			if _, err := netip.ParsePrefix(s); err != nil {
+				return nil, err
+			}
+		}
+	}
 	//nolint:staticcheck
 	if l.listenOptions.ProxyProtocol || l.listenOptions.ProxyProtocolAcceptNoHeader {
 		return nil, E.New("Proxy Protocol is deprecated and removed in sing-box 1.6.0")
@@ -121,8 +133,47 @@ func (l *Listener) loopTCPIn() {
 		metadata.InboundDetour = l.listenOptions.Detour
 		metadata.Source = M.SocksaddrFromNet(conn.RemoteAddr()).Unwrap()
 		metadata.OriginDestination = M.SocksaddrFromNet(conn.LocalAddr()).Unwrap()
-		ctx := log.ContextWithNewID(l.ctx)
-		l.logger.InfoContext(ctx, "inbound connection from ", metadata.Source)
-		go l.connHandler.NewConnection(ctx, conn, metadata, nil)
+		go l.handleFingerprintConnection(conn, metadata)
+
 	}
+}
+
+// 元数据头在独立连接协程读取，慢连接不会阻塞监听器接受下一条连接。
+func (l *Listener) handleFingerprintConnection(conn net.Conn, metadata adapter.InboundContext) {
+	metadata.TCPFingerprint = nil
+	if cfg := l.listenOptions.FingerprintProxyProtocol; cfg != nil {
+		realSource := metadata.Source.Addr
+		trusted := false
+		for _, s := range cfg.TrustedSources {
+			p, _ := netip.ParsePrefix(s)
+			if p.Contains(realSource) {
+				trusted = true
+				break
+			}
+		}
+		if !trusted {
+			conn.Close()
+			return
+		}
+		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		source, destination, f, err := tcpfingerprint.ReadProxyHeader(conn)
+		if err != nil {
+			conn.Close()
+			l.logger.Debug("invalid fingerprint proxy header: ", err)
+			return
+		}
+		conn.SetReadDeadline(time.Time{})
+		metadata.Source = source
+		metadata.OriginDestination = destination
+		metadata.TCPFingerprint = f
+	}
+	if metadata.TCPFingerprint == nil {
+		if manager := service.FromContext[*tcpfingerprint.Manager](l.ctx); manager != nil {
+			metadata.TCPFingerprint = manager.Lookup(metadata.Source, metadata.OriginDestination)
+		}
+	}
+	ctx := log.ContextWithNewID(l.ctx)
+	ctx = adapter.WithContext(ctx, &metadata)
+	l.logger.InfoContext(ctx, "inbound connection from ", metadata.Source)
+	l.connHandler.NewConnection(ctx, conn, metadata, nil)
 }

@@ -78,12 +78,13 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 			return nil, err
 		}
 		client, err = snellv6.NewClient(snellv6.ClientOptions{
-			PSK:     []byte(options.PSK),
-			UserKey: []byte(options.UserKey),
-			Mode:    mode,
-			Reuse:   options.Reuse,
-			Dialer:  outboundDialer,
-			Server:  serverAddr,
+			PSK:         []byte(options.PSK),
+			UserKey:     []byte(options.UserKey),
+			Mode:        mode,
+			Reuse:       options.Reuse,
+			Fingerprint: options.V6Options.TCPFingerprint,
+			Dialer:      outboundDialer,
+			Server:      serverAddr,
 		})
 	case 0:
 		return nil, E.New("snell: missing version")
@@ -111,6 +112,7 @@ func (h *Outbound) DialContext(ctx context.Context, network string, destination 
 	networkName := N.NetworkName(network)
 	switch networkName {
 	case N.NetworkTCP:
+		ctx = snellprotocol.ContextWithTCPFingerprint(ctx, metadata.TCPFingerprint)
 		h.logger.InfoContext(ctx, "outbound connection to ", destination)
 		if h.reuse {
 			return h.client.DialContext(adapter.ContextForMultiplexSession(ctx), destination)

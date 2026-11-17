@@ -143,5 +143,6 @@ type SnellObfsClientOptions struct {
 }
 
 type SnellV6Options struct {
-	Mode string `json:"mode,omitempty" enum:"default,unshaped,unsafe-raw"`
+	TCPFingerprint bool   `json:"tcp_fingerprint,omitempty"`
+	Mode           string `json:"mode,omitempty" enum:"default,unshaped,unsafe-raw"`
 }

@@ -11,6 +11,7 @@ import (
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
+	snellprotocol "github.com/sagernet/sing-snell"
 	M "github.com/sagernet/sing/common/metadata"
 
 	"github.com/miekg/dns"
@@ -45,14 +46,15 @@ type InboundManager interface {
 }
 
 type InboundContext struct {
-	Inbound     string
-	InboundType string
-	IPVersion   uint8
-	Network     string
-	Source      M.Socksaddr
-	Destination M.Socksaddr
-	User        string
-	Outbound    string
+	TCPFingerprint *snellprotocol.TCPFingerprint
+	Inbound        string
+	InboundType    string
+	IPVersion      uint8
+	Network        string
+	Source         M.Socksaddr
+	Destination    M.Socksaddr
+	User           string
+	Outbound       string
 
 	// power report
 

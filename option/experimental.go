@@ -6,10 +6,11 @@ import (
 )
 
 type ExperimentalOptions struct {
-	CacheFile *CacheFileOptions `json:"cache_file,omitempty"`
-	ClashAPI  *ClashAPIOptions  `json:"clash_api,omitempty"`
-	V2RayAPI  *V2RayAPIOptions  `json:"v2ray_api,omitempty"`
-	Debug     *DebugOptions     `json:"debug,omitempty"`
+	TCPFingerprint *TCPFingerprintOptions `json:"tcp_fingerprint,omitempty"`
+	CacheFile      *CacheFileOptions      `json:"cache_file,omitempty"`
+	ClashAPI       *ClashAPIOptions       `json:"clash_api,omitempty"`
+	V2RayAPI       *V2RayAPIOptions       `json:"v2ray_api,omitempty"`
+	Debug          *DebugOptions          `json:"debug,omitempty"`
 }
 
 type CacheFileOptions struct {
@@ -59,4 +60,11 @@ type V2RayStatsServiceOptions struct {
 	Inbounds  []string `json:"inbounds,omitempty"`
 	Outbounds []string `json:"outbounds,omitempty"`
 	Users     []string `json:"users,omitempty"`
+}
+
+// TCPFingerprintOptions为显式启用的私有试验功能。
+type TCPFingerprintOptions struct {
+	CaptureInterfaces []string `json:"capture_interfaces,omitempty"`
+	Rewrite           bool     `json:"rewrite,omitempty"`
+	Queue             uint16   `json:"queue,omitempty"`
 }

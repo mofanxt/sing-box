@@ -2,6 +2,7 @@ package direct
 
 import (
 	"context"
+	"io"
 	"net"
 	"net/netip"
 	"reflect"
@@ -11,6 +12,7 @@ import (
 	"github.com/sagernet/sing-box/adapter/outbound"
 	"github.com/sagernet/sing-box/common/dialer"
 	"github.com/sagernet/sing-box/common/iponly"
+	"github.com/sagernet/sing-box/common/tcpfingerprint"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
@@ -40,6 +42,7 @@ var (
 )
 
 type Outbound struct {
+	fingerprintProxyProtocol bool
 	outbound.Adapter
 	ctx            context.Context
 	logger         logger.ContextLogger
@@ -54,6 +57,7 @@ type Outbound struct {
 
 func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.DirectOutboundOptions) (adapter.Outbound, error) {
 	options.UDPFragmentDefault = true
+	options.ApplyTCPFingerprint = options.TCPFingerprint
 	if options.Detour != "" {
 		return nil, E.New("`detour` is not supported in direct context")
 	}
@@ -67,15 +71,16 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		return nil, err
 	}
 	outbound := &Outbound{
-		Adapter: outbound.NewAdapterWithDialerOptions(C.TypeDirect, tag, []string{N.NetworkTCP, N.NetworkUDP, N.NetworkICMP}, options.DialerOptions),
-		ctx:     ctx,
-		logger:  logger,
-		network: service.FromContext[adapter.NetworkManager](ctx),
+		fingerprintProxyProtocol: options.FingerprintProxyProtocol,
+		Adapter:                  outbound.NewAdapterWithDialerOptions(C.TypeDirect, tag, []string{N.NetworkTCP, N.NetworkUDP, N.NetworkICMP}, options.DialerOptions),
+		ctx:                      ctx,
+		logger:                   logger,
+		network:                  service.FromContext[adapter.NetworkManager](ctx),
 		//nolint:staticcheck
 		domainStrategy: C.DomainStrategy(options.DomainStrategy),
 		fallbackDelay:  time.Duration(options.FallbackDelay),
 		dialer:         outboundDialer.(dialer.ParallelInterfaceResolveDialer),
-		isEmpty: reflect.DeepEqual(options.DialerOptions, option.DialerOptions{
+		isEmpty: !options.FingerprintProxyProtocol && reflect.DeepEqual(options.DialerOptions, option.DialerOptions{
 			AbstractDialerOptions: option.AbstractDialerOptions{UDPFragmentDefault: true},
 		}),
 	}
@@ -173,10 +178,51 @@ func (h *Outbound) DialContext(ctx context.Context, network string, destination 
 	case N.NetworkUDP:
 		h.logger.InfoContext(ctx, "outbound packet connection to ", destination)
 	}
-	return h.dialer.DialContext(ctx, network, destination)
+	if h.fingerprintProxyProtocol && network != N.NetworkTCP {
+		return nil, E.New("fingerprint proxy protocol requires TCP")
+	}
+	conn, err := h.dialer.DialContext(ctx, network, destination)
+	return h.wrapFingerprintProxy(ctx, network, conn, err)
+}
+
+func (h *Outbound) wrapFingerprintProxy(ctx context.Context, network string, conn net.Conn, err error) (net.Conn, error) {
+	if err != nil {
+		return nil, err
+	}
+	if h.fingerprintProxyProtocol {
+		if network != N.NetworkTCP {
+			conn.Close()
+			return nil, E.New("fingerprint proxy protocol requires TCP")
+		}
+		metadata := adapter.ContextFrom(ctx)
+		if metadata == nil {
+			conn.Close()
+			return nil, E.New("missing proxy metadata")
+		}
+		header, err := tcpfingerprint.ProxyHeader(metadata.Source, metadata.OriginDestination, metadata.TCPFingerprint)
+		if err != nil {
+			conn.Close()
+			return nil, err
+		}
+		conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+		n, writeErr := conn.Write(header)
+		err = writeErr
+		if err == nil && n != len(header) {
+			err = io.ErrShortWrite
+		}
+		conn.SetWriteDeadline(time.Time{})
+		if err != nil {
+			conn.Close()
+			return nil, err
+		}
+	}
+	return conn, nil
 }
 
 func (h *Outbound) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
+	if h.fingerprintProxyProtocol {
+		return nil, E.New("fingerprint proxy protocol requires TCP")
+	}
 	if h.isMyLoopbackAddress(destination.Addr) {
 		return nil, E.New("loopback connection to TUN range")
 	}
@@ -192,6 +238,9 @@ func (h *Outbound) ListenPacket(ctx context.Context, destination M.Socksaddr) (n
 }
 
 func (h *Outbound) ListenPacketWithDestination(ctx context.Context, destination M.Socksaddr) (net.PacketConn, netip.Addr, error) {
+	if h.fingerprintProxyProtocol {
+		return nil, netip.Addr{}, E.New("fingerprint proxy protocol requires TCP")
+	}
 	if h.isMyLoopbackAddress(destination.Addr) {
 		return nil, netip.Addr{}, E.New("loopback connection to TUN range")
 	}
@@ -249,13 +298,17 @@ func (h *Outbound) DialParallel(ctx context.Context, network string, destination
 	metadata.Outbound = h.Tag()
 	metadata.Destination = destination
 	network = N.NetworkName(network)
+	if h.fingerprintProxyProtocol && network != N.NetworkTCP {
+		return nil, E.New("fingerprint proxy protocol requires TCP")
+	}
 	switch network {
 	case N.NetworkTCP:
 		h.logger.InfoContext(ctx, "outbound connection to ", destination)
 	case N.NetworkUDP:
 		h.logger.InfoContext(ctx, "outbound packet connection to ", destination)
 	}
-	return dialer.DialParallelNetwork(ctx, h.dialer, network, destination, destinationAddresses, len(destinationAddresses) > 0 && destinationAddresses[0].Is6(), nil, nil, nil, h.fallbackDelay)
+	conn, err := dialer.DialParallelNetwork(ctx, h.dialer, network, destination, destinationAddresses, len(destinationAddresses) > 0 && destinationAddresses[0].Is6(), nil, nil, nil, h.fallbackDelay)
+	return h.wrapFingerprintProxy(ctx, network, conn, err)
 }
 
 func (h *Outbound) DialParallelNetwork(ctx context.Context, network string, destination M.Socksaddr, destinationAddresses []netip.Addr, networkStrategy *C.NetworkStrategy, networkType []C.InterfaceType, fallbackNetworkType []C.InterfaceType, fallbackDelay time.Duration) (net.Conn, error) {
@@ -266,6 +319,9 @@ func (h *Outbound) DialParallelNetwork(ctx context.Context, network string, dest
 	metadata.Outbound = h.Tag()
 	metadata.Destination = destination
 	network = N.NetworkName(network)
+	if h.fingerprintProxyProtocol && network != N.NetworkTCP {
+		return nil, E.New("fingerprint proxy protocol requires TCP")
+	}
 	switch network {
 	case N.NetworkTCP:
 		h.logger.InfoContext(ctx, "outbound connection to ", destination)
@@ -275,10 +331,14 @@ func (h *Outbound) DialParallelNetwork(ctx context.Context, network string, dest
 	if fallbackDelay == 0 {
 		fallbackDelay = h.fallbackDelay
 	}
-	return dialer.DialParallelNetwork(ctx, h.dialer, network, destination, destinationAddresses, len(destinationAddresses) > 0 && destinationAddresses[0].Is6(), networkStrategy, networkType, fallbackNetworkType, fallbackDelay)
+	conn, err := dialer.DialParallelNetwork(ctx, h.dialer, network, destination, destinationAddresses, len(destinationAddresses) > 0 && destinationAddresses[0].Is6(), networkStrategy, networkType, fallbackNetworkType, fallbackDelay)
+	return h.wrapFingerprintProxy(ctx, network, conn, err)
 }
 
 func (h *Outbound) ListenSerialNetworkPacket(ctx context.Context, destination M.Socksaddr, destinationAddresses []netip.Addr, networkStrategy *C.NetworkStrategy, networkType []C.InterfaceType, fallbackNetworkType []C.InterfaceType, fallbackDelay time.Duration) (net.PacketConn, netip.Addr, error) {
+	if h.fingerprintProxyProtocol {
+		return nil, netip.Addr{}, E.New("fingerprint proxy protocol requires TCP")
+	}
 	if h.isMyLoopbackAddress(destinationAddresses...) {
 		return nil, netip.Addr{}, E.New("loopback connection to TUN range")
 	}
