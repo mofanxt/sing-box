@@ -179,8 +179,9 @@ func parseOptions(b []byte) map[byte][]byte {
 	return result
 }
 
+// FromIPv4接收普通SYN及RFC 3168的ECN协商SYN；ECN仍由出口内核协商。
 func FromIPv4(p []byte) (*snell.TCPFingerprint, error) {
-	if len(p) < 40 || p[0] != 0x45 || p[9] != 6 || binary.BigEndian.Uint16(p[6:8]) != 0x4000 || p[33] != 2 {
+	if len(p) < 40 || p[0] != 0x45 || p[9] != 6 || binary.BigEndian.Uint16(p[6:8]) != 0x4000 || (p[33] != 2 && p[33] != 0xc2) {
 		return nil, fmt.Errorf("unsupported SYN")
 	}
 	n := int(p[32]>>4) * 4

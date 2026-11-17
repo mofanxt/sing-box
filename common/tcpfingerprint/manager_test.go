@@ -78,8 +78,12 @@ func TestCaptureAndRewrite(t *testing.T) {
 	}
 	p = linuxSYN()
 	p[33] |= 0xc0
-	if _, err = FromIPv4(p); err == nil {
-		t.Fatal("ECN unsupported case accepted")
+	if _, err = FromIPv4(p); err != nil {
+		t.Fatal("ECN SYN should retain its fingerprint:", err)
+	}
+	out, err = Rewrite(p, appleFP())
+	if err != nil || out[33] != 0xc2 {
+		t.Fatal("rewrite must preserve kernel ECN negotiation flags")
 	}
 }
 
@@ -143,5 +147,34 @@ func TestQueueIsolation(t *testing.T) {
 	}
 	if a.markPrefix()&markMask == b.markPrefix()&markMask {
 		t.Fatal("queue marks overlap")
+	}
+}
+
+// 来自6001真实iPhone的SYN形状：64字节、DF、零IPID、ECN和Apple选项。
+func TestIPhoneECNCapture(t *testing.T) {
+	p := make([]byte, 64)
+	p[0], p[6], p[8], p[9], p[32], p[33] = 0x45, 0x40, 64, 6, 0xb0, 0xc2
+	binary.BigEndian.PutUint16(p[2:4], 64)
+	binary.BigEndian.PutUint16(p[34:36], 65535)
+	copy(p[40:], []byte{2, 4, 5, 180, 1, 3, 3, 6, 1, 1, 8, 10, 0x8a, 0xb5, 0xa9, 0x89, 0, 0, 0, 0, 4, 2, 0, 0})
+	fp, err := FromIPv4(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fp.Window != 65535 || fp.TTL != 64 || !fp.ZeroIPID || parseOptions(fp.Options)[3][2] != 6 {
+		t.Fatal("iPhone shape lost")
+	}
+	encoded, err := fp.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) == 0 {
+		t.Fatal("empty metadata")
+	}
+	for _, flags := range []byte{0x12, 0x42, 0x82, 0x03, 0x06, 0x22} {
+		p[33] = flags
+		if _, err = FromIPv4(p); err == nil {
+			t.Fatalf("accepted unsupported flags %x", flags)
+		}
 	}
 }
