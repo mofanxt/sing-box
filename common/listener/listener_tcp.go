@@ -157,21 +157,34 @@ func (l *Listener) handleFingerprintConnection(conn net.Conn, metadata adapter.I
 				break
 			}
 		}
-		if !trusted {
+		if !trusted && !cfg.Optional {
 			conn.Close()
 			return
 		}
-		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-		source, destination, f, err := tcpfingerprint.ReadProxyHeader(conn)
-		if err != nil {
-			conn.Close()
-			l.logger.Debug("invalid fingerprint proxy header: ", err)
-			return
+		if trusted {
+			conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+			hasHeader := true
+			if cfg.Optional {
+				var err error
+				hasHeader, err = tcpfingerprint.PeekProxyHeader(conn)
+				if err != nil {
+					conn.Close()
+					return
+				}
+			}
+			if hasHeader {
+				source, destination, f, err := tcpfingerprint.ReadProxyHeader(conn)
+				if err != nil {
+					conn.Close()
+					l.logger.Debug("invalid fingerprint proxy header: ", err)
+					return
+				}
+				metadata.Source = source
+				metadata.OriginDestination = destination
+				metadata.TCPFingerprint = f
+			}
+			conn.SetReadDeadline(time.Time{})
 		}
-		conn.SetReadDeadline(time.Time{})
-		metadata.Source = source
-		metadata.OriginDestination = destination
-		metadata.TCPFingerprint = f
 	}
 	if metadata.TCPFingerprint == nil {
 		if manager := service.FromContext[*tcpfingerprint.Manager](l.ctx); manager != nil {

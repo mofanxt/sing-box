@@ -187,5 +187,6 @@ func (o *ListenOptions) ReplaceListenOptions(options ListenOptions) {
 
 // 只接受显式受信任来源的PROXY v2元数据，不与旧proxy_protocol字段混用。
 type FingerprintProxyProtocolOptions struct {
+	Optional       bool     `json:"optional,omitempty"`
 	TrustedSources []string `json:"trusted_sources"`
 }

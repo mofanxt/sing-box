@@ -59,7 +59,7 @@ type legacyUpstreamHandlerWrapper struct {
 func (w *legacyUpstreamHandlerWrapper) NewConnection(ctx context.Context, conn net.Conn, metadata M.Metadata) error {
 	myMetadata := w.metadata
 	// 在协议解析及多路复用之前保留入口已验证的物理连接特征。
-	if original := ContextFrom(ctx); original != nil {
+	if original := ContextFrom(ctx); original != nil && original.TCPFingerprint != nil {
 		myMetadata.TCPFingerprint = original.TCPFingerprint.Clone()
 		myMetadata.OriginDestination = original.OriginDestination
 	}

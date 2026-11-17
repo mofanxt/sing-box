@@ -29,3 +29,5 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -tags with_quic,with_ut
 ```
 
 完整隔离三跳、SS2022桥接、无元数据回退和UDP回归脚本维护在 my-servers 项目的 scripts/proxy/tcp-fingerprint-lab.py。生产替换前仍须核对目标机完整配置、主备、DNS和独立自动回退。
+
+兼容入口可显式设置 `fingerprint_proxy_protocol.optional: true`：只解析可信来源的PROXY头，不带头的旧连接继续按原协议处理。Linux通过MSG_PEEK检查签名，不提前消费TLS/SS数据；不可信来源提供的伪造头仍不会被信任。默认严格模式要求可信来源和合法转发头。
