@@ -22,7 +22,18 @@ import (
 )
 
 func (l *Listener) ListenTCP() (net.Listener, error) {
+	// 传输层自行 Accept，无法执行受信来源校验或把头部元数据交给逻辑连接。
+	if l.listenOptions.FingerprintProxyProtocol != nil || l.listenOptions.FingerprintOriginalDestination {
+		return nil, E.New("fingerprint listener options require sing-box to accept TCP connections")
+	}
+	return l.listenTCP()
+}
+
+func (l *Listener) listenTCP() (net.Listener, error) {
 	if cfg := l.listenOptions.FingerprintProxyProtocol; cfg != nil {
+		if cfg.Optional && !C.IsLinux {
+			return nil, E.New("optional fingerprint proxy requires Linux")
+		}
 		if len(cfg.TrustedSources) == 0 {
 			return nil, E.New("fingerprint proxy requires trusted_sources")
 		}

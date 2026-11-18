@@ -17,7 +17,7 @@
 
 Linux需CAP_NET_RAW和CAP_NET_ADMIN以及nft工具。仅专用SO_MARK高16位为队列编号（默认0x4c3e）的IPv4 SYN进入独占NFQUEUE；不允许与冲突的routing mark、MPTCP或未经验证的多接口策略混用。保留本连接序列号、时间戳数值并重算校验和；MSS使用该出站内核原值，不继承入口隧道的较小MSS，也绝不超过出口内核值。
 
-出口保留内核接收缓冲自动调优。实际 SYN 的窗口缩放与样本不一致、模板已满或缺少样本时使用原生 SYN。路由规则为该 TCP 出站指定多接口策略时，拨号返回配置冲突。
+出口保留内核接收缓冲自动调优。存在 WS 选项时，使用逐 socket 的 TCP_WINDOW_CLAMP 将通告窗口限制在该缩放能表示的最大值，保留 socket 上已有的更小限制。内核仍决定实际缩放。该 socket 设置会优先于 Linux 路由的 window 指标，需要依赖特定路由窗口限制的流量应使用普通 direct 出站。实际 SYN 缩放与样本不一致、模板已满或缺少样本时使用原生 SYN。路由规则为该 TCP 出站指定多接口策略时，拨号返回配置冲突。
 
 只支持IPv4、无IP选项/分片和受支持TCP选项。采集支持普通或RFC3168 ECN协商SYN；TFO选项及服务器专属cookie在采集阶段移除，保留其余选项。TFO早期数据只允许首部采集，不保存或传递负载；出口任何带负载的SYN都不改写。IPv6、QUIC/HTTP3、完整TCP行为、TLS/JA3/JA4、操作系统判定和风控效果不在承诺范围。本版本使用NFQUEUE，不是eBPF。
 
@@ -32,4 +32,4 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -tags with_quic,with_ut
 
 完整隔离三跳、SS2022桥接、无元数据回退和UDP回归脚本维护在 my-servers 项目的 scripts/proxy/tcp-fingerprint-lab.py。生产替换前仍须核对目标机完整配置、主备、DNS和独立自动回退。
 
-兼容入口可显式设置 `fingerprint_proxy_protocol.optional: true`：只解析可信来源的PROXY头，首字节等待三秒仍无数据时交给旧协议，已收到部分签名时另给三秒完成签名。Linux通过MSG_PEEK检查签名，不提前消费TLS/SS数据；不可信来源提供的伪造头仍不会被信任。默认严格模式要求可信来源和合法转发头。
+兼容入口可显式设置 `fingerprint_proxy_protocol.optional: true`：只解析可信来源的PROXY头，首字节等待三秒仍无数据时交给旧协议，已收到部分签名时另给三秒完成签名。Linux通过MSG_PEEK检查签名，不提前消费TLS/SS数据；不可信来源提供的伪造头仍不会被信任。默认严格模式要求可信来源和合法转发头。由 WebSocket 等 transport 自行接管 TCP 监听时，启动会拒绝配置这些依赖逐连接接收处理的选项。PROXY 转发出站只声明 TCP 能力。

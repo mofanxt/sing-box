@@ -314,3 +314,22 @@ func TestRewriteKeepsKernelWindowScaling(t *testing.T) {
 		t.Fatal("removed native window scaling")
 	}
 }
+
+func TestUnfragmentedSYN(t *testing.T) {
+	for _, field := range []uint16{0, 0x4000, 0x2000, 1, 0x8000} {
+		p := linuxSYN()
+		binary.BigEndian.PutUint16(p[6:8], field)
+		binary.BigEndian.PutUint16(p[4:6], 1234)
+		_, err := FromIPv4(p)
+		valid := field == 0 || field == 0x4000
+		if (err == nil) != valid {
+			t.Fatalf("fragment field %04x: %v", field, err)
+		}
+		if field == 0 {
+			out, err := Rewrite(p, appleFP())
+			if err != nil || binary.BigEndian.Uint16(out[4:6]) != 1234 {
+				t.Fatal("lost fragmentable IPID", err)
+			}
+		}
+	}
+}

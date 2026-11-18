@@ -85,7 +85,7 @@ func New(
 
 func (l *Listener) Start() error {
 	if common.Contains(l.network, N.NetworkTCP) {
-		_, err := l.ListenTCP()
+		_, err := l.listenTCP()
 		if err != nil {
 			return err
 		}

@@ -99,13 +99,6 @@ func (m *Manager) start() error {
 				output, _ = Rewrite(*a.Payload, f)
 			}
 		}
-		m.mu.Lock()
-		if output != nil {
-			m.rewritten++
-		} else {
-			m.skipped++
-		}
-		m.mu.Unlock()
 		var verdictErr error
 		if output != nil {
 			verdictErr = q.SetVerdictWithOption(*a.PacketID, nfqueue.NfAccept, nfqueue.WithAlteredPacket(output))
@@ -114,7 +107,15 @@ func (m *Manager) start() error {
 		}
 		if verdictErr != nil {
 			m.logger.Error("tcp fingerprint verdict: ", verdictErr)
+			return 0
 		}
+		m.mu.Lock()
+		if output != nil {
+			m.rewritten++
+		} else {
+			m.skipped++
+		}
+		m.mu.Unlock()
 		return 0
 	}, func(err error) int {
 		if m.ctx.Err() == nil {
@@ -169,6 +170,11 @@ func (m *Manager) Control(f *snell.TCPFingerprint) (func(string, string, syscall
 	if m == nil || !m.options.Rewrite || f == nil || f.Validate() != nil {
 		return nil, nil
 	}
+	// 使用协商缩放能表示的最大窗口，保留 Linux 接收缓冲自动调优。
+	var maxWindow int
+	if ws := parseOptions(f.Options)[3]; ws != nil {
+		maxWindow = 65535 << ws[2]
+	}
 	mark := m.templateMark(f)
 	if mark == 0 {
 		return nil, nil
@@ -179,6 +185,18 @@ func (m *Manager) Control(f *snell.TCPFingerprint) (func(string, string, syscall
 		}
 		var inner error
 		err := raw.Control(func(fd uintptr) {
+			if maxWindow != 0 {
+				clamp, e := unix.GetsockoptInt(int(fd), unix.IPPROTO_TCP, unix.TCP_WINDOW_CLAMP)
+				if e == nil && (clamp == 0 || clamp > maxWindow) {
+					e = unix.SetsockoptInt(int(fd), unix.IPPROTO_TCP, unix.TCP_WINDOW_CLAMP, maxWindow)
+				}
+				if e != nil {
+					m.mu.Lock()
+					m.skipped++
+					m.mu.Unlock()
+					return
+				}
+			}
 			inner = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, int(mark))
 		})
 		if err != nil {

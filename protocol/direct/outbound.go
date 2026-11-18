@@ -70,9 +70,13 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	if err != nil {
 		return nil, err
 	}
+	networks := []string{N.NetworkTCP, N.NetworkUDP, N.NetworkICMP}
+	if options.FingerprintProxyProtocol {
+		networks = []string{N.NetworkTCP}
+	}
 	outbound := &Outbound{
 		fingerprintProxyProtocol: options.FingerprintProxyProtocol,
-		Adapter:                  outbound.NewAdapterWithDialerOptions(C.TypeDirect, tag, []string{N.NetworkTCP, N.NetworkUDP, N.NetworkICMP}, options.DialerOptions),
+		Adapter:                  outbound.NewAdapterWithDialerOptions(C.TypeDirect, tag, networks, options.DialerOptions),
 		ctx:                      ctx,
 		logger:                   logger,
 		network:                  service.FromContext[adapter.NetworkManager](ctx),
@@ -260,6 +264,9 @@ func (h *Outbound) ListenPacketWithDestination(ctx context.Context, destination 
 }
 
 func (h *Outbound) PreMatchFlow(network string, destination netip.Addr) adapter.PreMatchAction {
+	if h.fingerprintProxyProtocol && network != N.NetworkTCP {
+		return adapter.PreMatchReject
+	}
 	if network == N.NetworkICMP && h.icmpPort != nil {
 		if h.isMyLoopbackAddress(destination) {
 			h.logger.Error("reject ", network, " connection to ", destination, ": loopback connection to TUN range")

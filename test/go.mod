@@ -105,7 +105,7 @@ require (
 	github.com/mitchellh/go-ps v1.0.0 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/term v0.5.0 // indirect
-	github.com/mofanxt/sing-snell v0.0.0-20261118005916-462475d3184b // indirect
+	github.com/mofanxt/sing-snell v0.0.0-20261118012603-dfd328846e0e // indirect
 	github.com/morikuni/aec v1.0.0 // indirect
 	github.com/openai/openai-go/v3 v3.26.0 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect

@@ -250,7 +250,7 @@ func captureOptions(raw []byte) ([]byte, bool, error) {
 
 // FromIPv4接收普通SYN及RFC 3168的ECN协商SYN；ECN仍由出口内核协商。
 func FromIPv4(p []byte) (*snell.TCPFingerprint, error) {
-	if len(p) < 40 || p[0] != 0x45 || p[9] != 6 || binary.BigEndian.Uint16(p[6:8]) != 0x4000 || (p[33] != 2 && p[33] != 0xc2) {
+	if len(p) < 40 || p[0] != 0x45 || p[9] != 6 || binary.BigEndian.Uint16(p[6:8])&^uint16(0x4000) != 0 || (p[33] != 2 && p[33] != 0xc2) {
 		return nil, fmt.Errorf("unsupported SYN")
 	}
 	n := int(p[32]>>4) * 4
@@ -344,7 +344,8 @@ func Rewrite(p []byte, f *snell.TCPFingerprint) ([]byte, error) {
 	copy(out, p[:40])
 	copy(out[40:], opts)
 	out[8] = f.TTL
-	if f.ZeroIPID {
+	// 允许分片的出站保留本机 IPID，以免后续分片重组冲突。
+	if f.ZeroIPID && p[6]&0x40 != 0 {
 		out[4], out[5] = 0, 0
 	}
 	binary.BigEndian.PutUint16(out[2:4], uint16(len(out)))

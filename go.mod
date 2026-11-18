@@ -131,7 +131,7 @@ require (
 	github.com/libp2p/go-netroute v0.2.1 // indirect
 	github.com/mdlayher/socket v0.6.0 // indirect
 	github.com/mitchellh/go-ps v1.0.0 // indirect
-	github.com/mofanxt/sing-snell v0.0.0-20261118005916-462475d3184b
+	github.com/mofanxt/sing-snell v0.0.0-20261118012603-dfd328846e0e
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.26 // indirect
 	github.com/pion/dtls/v3 v3.1.5 // indirect
