@@ -328,9 +328,12 @@ func (d *DefaultDialer) DialContext(ctx context.Context, network string, address
 					return DialSlowContext(&d.dialer4, ctx, d.netns, network, address)
 				}
 				dialer := d.dialer4
-				if d.fingerprint != nil {
-					if metadata := adapter.ContextFrom(ctx); metadata != nil {
-						dialer.Control = control.Append(dialer.Control, d.fingerprint.Control(metadata.TCPFingerprint))
+				if metadata := adapter.ContextFrom(ctx); metadata != nil {
+					setup, release := d.fingerprint.Control(metadata.TCPFingerprint)
+					if release != nil {
+						// 此路径禁用 TFO，DialContext 返回时握手已完成或拨号已终止。
+						defer release()
+						dialer.Control = control.Append(dialer.Control, setup)
 					}
 				}
 				return DialSlowContext(&dialer, ctx, d.netns, network, address)

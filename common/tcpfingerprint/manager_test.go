@@ -1,6 +1,7 @@
 package tcpfingerprint
 
 import (
+	"container/list"
 	"encoding/binary"
 	"net/netip"
 	"testing"
@@ -88,7 +89,7 @@ func TestCaptureAndRewrite(t *testing.T) {
 }
 
 func TestCacheIsolationAndBounds(t *testing.T) {
-	m := &Manager{cache: make(map[string]entry), templates: make(map[uint32]*snell.TCPFingerprint), marks: make(map[string]uint32)}
+	m := &Manager{cache: make(map[string]*list.Element), templates: make(map[uint32]*template), marks: make(map[string]uint32)}
 	s := M.SocksaddrFrom(netip.MustParseAddr("192.0.2.1"), 12345)
 	d := M.SocksaddrFrom(netip.MustParseAddr("192.0.2.2"), 443)
 	m.remember(s, d, appleFP())
@@ -100,27 +101,26 @@ func TestCacheIsolationAndBounds(t *testing.T) {
 	if _, ok := m.cache[cacheKey(s, other)]; ok {
 		t.Fatal("cross destination collision")
 	}
-	for i := 0; i < 256; i++ {
-		f := appleFP()
-		f.Window = uint16(i + 1)
-		if m.templateMark(f) == 0 {
-			t.Fatal("premature table full")
-		}
+	for i := 1; i < 8192; i++ {
+		source := s
+		source.Port = uint16(i)
+		m.remember(source, d, appleFP())
 	}
-	f := appleFP()
-	f.Window = 1000
-	if m.templateMark(f) != 0 {
-		t.Fatal("unbounded template table")
+	m.remember(s, other, appleFP())
+	if len(m.cache) != 8192 || m.cache[cacheKey(s, other)] != nil {
+		t.Fatal("full live cache admitted a new tuple")
 	}
-	if m.templateMark(appleFP()) != 0 { /* 表满时未知模板按设计跳过 */
+	old := m.order.Front()
+	e := old.Value.(entry)
+	e.at = time.Now().Add(-time.Minute)
+	old.Value = e
+	m.remember(s, other, appleFP())
+	if len(m.cache) != 8192 || m.cache[cacheKey(s, other)] == nil || m.cache[e.key] != nil {
+		t.Fatal("expired entry not replaced")
 	}
-	m.cache[cacheKey(s, d)] = entry{time.Now().Add(-time.Minute), appleFP()}
-	for i := 0; i < 8192; i++ {
-		m.cache[string(rune(i))] = entry{time.Now(), appleFP()}
-	}
-	m.remember(s, d, appleFP())
-	if len(m.cache) > 8192 {
-		t.Fatal("unbounded capture cache")
+	m.remember(s, other, appleFP())
+	if m.order.Len() != len(m.cache) {
+		t.Fatal("retransmit added a duplicate")
 	}
 }
 
@@ -139,7 +139,7 @@ func FuzzCapture(f *testing.F) {
 
 func TestQueueIsolation(t *testing.T) {
 	newManager := func(queue uint16) *Manager {
-		return &Manager{options: option.TCPFingerprintOptions{Queue: queue}, templates: make(map[uint32]*snell.TCPFingerprint), marks: make(map[string]uint32)}
+		return &Manager{options: option.TCPFingerprintOptions{Queue: queue}, templates: make(map[uint32]*template), marks: make(map[string]uint32)}
 	}
 	a, b := newManager(19518), newManager(19519)
 	if a.tableName() == b.tableName() || a.templateMark(appleFP()) == b.templateMark(appleFP()) {
@@ -249,5 +249,34 @@ func TestExitMSSUsesIndependentPath(t *testing.T) {
 	}
 	if got := binary.BigEndian.Uint16(out[42:44]); got != 1360 {
 		t.Fatalf("exit path MSS exceeded: %d", got)
+	}
+}
+
+func TestTemplateDialLifetime(t *testing.T) {
+	m := &Manager{templates: make(map[uint32]*template), marks: make(map[string]uint32)}
+	f := appleFP()
+	first := m.templateMark(f)
+	binary.BigEndian.PutUint16(f.Options[2:4], 1380)
+	if first == 0 || m.templateMark(f) != first {
+		t.Fatal("MSS allocated a separate slot")
+	}
+	m.releaseMark(first)
+	for i := 1; i <= 255; i++ {
+		f.Window = uint16(i)
+		if m.templateMark(f) == 0 {
+			t.Fatal("premature exhaustion")
+		}
+	}
+	f.Window = 256
+	if m.templateMark(f) != 0 || m.templates[first] == nil {
+		t.Fatal("active handshake evicted")
+	}
+	m.releaseMark(first)
+	for i := 0; i < 66000; i++ {
+		mark := m.templateMark(f)
+		if mark == 0 || mark&markMask != m.markPrefix() {
+			t.Fatal("slot or mark prefix lost")
+		}
+		m.releaseMark(mark)
 	}
 }

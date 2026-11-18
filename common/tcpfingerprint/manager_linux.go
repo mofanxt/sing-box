@@ -22,6 +22,12 @@ import (
 
 func (m *Manager) start() error {
 	if m.options.Rewrite {
+		// 抽象 socket 随进程退出释放，覆盖 NFQUEUE 取消与 nft 清理之间的窗口。
+		owner, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: "@" + m.tableName(), Net: "unixgram"})
+		if err != nil {
+			return fmt.Errorf("claim fingerprint queue %d: %w", m.queue(), err)
+		}
+		m.closers = append(m.closers, owner.Close)
 		if err := m.calibrateWindowBuffers(); err != nil {
 			return err
 		}
@@ -93,7 +99,10 @@ func (m *Manager) start() error {
 		var output []byte
 		if a.Mark != nil && a.Payload != nil && (a.CapLen == nil || int(*a.CapLen) == len(*a.Payload)) {
 			m.mu.Lock()
-			f := m.templates[*a.Mark].Clone()
+			var f *snell.TCPFingerprint
+			if t := m.templates[*a.Mark]; t != nil {
+				f = t.fingerprint
+			}
 			m.mu.Unlock()
 			if f != nil {
 				output, _ = Rewrite(*a.Payload, f)
@@ -129,23 +138,42 @@ func (m *Manager) start() error {
 	cmd := exec.CommandContext(m.ctx, "nft", "-f", "-")
 	cmd.Stdin = strings.NewReader(rules)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("tcp fingerprint nft: %w: %s", err, out)
+		// 已经独占此 netns 的 NFQUEUE。只接管与旧版完全匹配的遗留规则。
+		if !m.ownsRules(m.ctx) {
+			return fmt.Errorf("tcp fingerprint nft: %w: %s", err, out)
+		}
 	}
 	m.rulesOwned = true
 	m.closers = append(m.closers, func() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
+		if !m.ownsRules(ctx) {
+			return fmt.Errorf("tcp fingerprint: cannot verify table %s before cleanup", m.tableName())
+		}
 		return exec.CommandContext(ctx, "nft", "delete", "table", "inet", m.tableName()).Run()
 	})
 	m.logger.Info("tcp fingerprint: queue ready ", m.options.Queue)
 	return nil
 }
 
+// 使用无计数值、数值优先级的输出。接受 nft 新旧两种 queue 拼写，
+// 任意额外对象、链策略、匹配条件或 verdict 都不属于本实例。
+func (m *Manager) ownsRules(ctx context.Context) bool {
+	listed, err := exec.CommandContext(ctx, "nft", "-s", "-y", "list", "table", "inet", m.tableName()).Output()
+	if err != nil {
+		return false
+	}
+	actual := strings.Join(strings.Fields(string(listed)), " ")
+	prefix := fmt.Sprintf("table inet %s { chain post { type filter hook postrouting priority 110; policy accept; ip protocol tcp tcp flags & (syn | ack) == syn meta mark & 0xffff0000 == 0x%08x counter queue ", m.tableName(), m.markPrefix())
+	return actual == fmt.Sprintf("%sflags bypass to %d } }", prefix, m.queue()) ||
+		actual == fmt.Sprintf("%snum %d bypass } }", prefix, m.queue())
+}
+
 func htons(v uint16) uint16 { return v<<8 | v>>8 }
 
-func (m *Manager) Control(f *snell.TCPFingerprint) func(string, string, syscall.RawConn) error {
+func (m *Manager) Control(f *snell.TCPFingerprint) (func(string, string, syscall.RawConn) error, func()) {
 	if m == nil || !m.options.Rewrite || f == nil || f.Validate() != nil {
-		return nil
+		return nil, nil
 	}
 	opts := parseOptions(f.Options)
 	var scale byte
@@ -158,11 +186,11 @@ func (m *Manager) Control(f *snell.TCPFingerprint) func(string, string, syscall.
 		m.mu.Lock()
 		m.skipped++
 		m.mu.Unlock()
-		return nil
+		return nil, nil
 	}
 	mark := m.templateMark(f)
 	if mark == 0 {
-		return nil
+		return nil, nil
 	}
 	return func(network, address string, raw syscall.RawConn) error {
 		if strings.HasSuffix(network, "6") {
@@ -192,7 +220,7 @@ func (m *Manager) Control(f *snell.TCPFingerprint) func(string, string, syscall.
 			return err
 		}
 		return inner
-	}
+	}, func() { m.releaseMark(mark) }
 }
 
 // 启动时仅连接本机回环，最多申请16MiB的逐socket缓冲；不修改全局sysctl。

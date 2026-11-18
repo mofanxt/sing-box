@@ -1,6 +1,7 @@
 package tcpfingerprint
 
 import (
+	"container/list"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -18,6 +19,7 @@ const markMask uint32 = 0xffff0000
 const tableName = "sbox_tcp_fingerprint"
 
 type entry struct {
+	key         string
 	at          time.Time
 	fingerprint *snell.TCPFingerprint
 }
@@ -34,14 +36,21 @@ func (m *Manager) tableName() string  { return fmt.Sprintf("%s_%d", tableName, m
 
 func (m *Manager) Name() string { return "tcp-fingerprint" }
 
+type template struct {
+	fingerprint *snell.TCPFingerprint
+	key         string
+	dials       int
+}
+
 type Manager struct {
+	order                                 list.List
 	ctx                                   context.Context
 	cancel                                context.CancelFunc
 	options                               option.TCPFingerprintOptions
 	logger                                logger.ContextLogger
 	mu                                    sync.Mutex
-	cache                                 map[string]entry
-	templates                             map[uint32]*snell.TCPFingerprint
+	cache                                 map[string]*list.Element
+	templates                             map[uint32]*template
 	marks                                 map[string]uint32
 	windowBuffers                         map[byte]int
 	next                                  uint32
@@ -59,7 +68,7 @@ func New(ctx context.Context, options option.TCPFingerprintOptions, log logger.C
 		options.Queue = 19518
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	return &Manager{ctx: ctx, cancel: cancel, options: options, logger: log, cache: make(map[string]entry), templates: make(map[uint32]*snell.TCPFingerprint), marks: make(map[string]uint32)}, nil
+	return &Manager{ctx: ctx, cancel: cancel, options: options, logger: log, cache: make(map[string]*list.Element), templates: make(map[uint32]*template), marks: make(map[string]uint32)}, nil
 }
 
 func (m *Manager) Start(stage adapter.StartStage, scope *adapter.Scope) error {
@@ -95,18 +104,19 @@ func (m *Manager) remember(s, d M.Socksaddr, f *snell.TCPFingerprint) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now()
-	if len(m.cache) >= 8192 {
-		for k, e := range m.cache {
-			if now.Sub(e.at) > 30*time.Second {
-				delete(m.cache, k)
-			}
-		}
-		if len(m.cache) >= 8192 {
+	key := cacheKey(s, d)
+	if elem := m.cache[key]; elem != nil {
+		m.order.Remove(elem)
+	} else if len(m.cache) >= 8192 {
+		oldest := m.order.Front()
+		if now.Sub(oldest.Value.(entry).at) < 30*time.Second {
 			m.skipped++
 			return
 		}
+		delete(m.cache, oldest.Value.(entry).key)
+		m.order.Remove(oldest)
 	}
-	m.cache[cacheKey(s, d)] = entry{now, f.Clone()}
+	m.cache[key] = m.order.PushBack(entry{key, now, f.Clone()})
 	m.captured++
 }
 
@@ -117,14 +127,16 @@ func (m *Manager) Lookup(s, d M.Socksaddr) *snell.TCPFingerprint {
 	}
 	for i := 0; i < 5; i++ {
 		m.mu.Lock()
-		e, ok := m.cache[cacheKey(s, d)]
+		elem, ok := m.cache[cacheKey(s, d)]
 		if ok {
 			delete(m.cache, cacheKey(s, d))
-		}
-		if ok && time.Since(e.at) < 30*time.Second {
-			m.matched++
-			m.mu.Unlock()
-			return e.fingerprint.Clone()
+			m.order.Remove(elem)
+			e := elem.Value.(entry)
+			if time.Since(e.at) < 30*time.Second {
+				m.matched++
+				m.mu.Unlock()
+				return e.fingerprint.Clone()
+			}
 		}
 		m.mu.Unlock()
 		select {
@@ -141,20 +153,42 @@ func (m *Manager) templateMark(f *snell.TCPFingerprint) uint32 {
 	if err != nil {
 		return 0
 	}
+	// 编码的前六字节为模板头。入口 MSS 不参与出口模板的身份判断。
+	clear(parseOptions(b[6:])[2][2:])
+	key := string(b)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if mark, ok := m.marks[string(b)]; ok {
+	if mark, ok := m.marks[key]; ok {
+		m.templates[mark].dials++
 		return mark
 	}
 	if len(m.templates) >= 256 {
 		m.skipped++
 		return 0
 	}
-	m.next++
-	mark := m.markPrefix() | m.next
-	m.marks[string(b)] = mark
-	m.templates[mark] = f.Clone()
+	// 低16位循环分配，跳过仍有拨号或重传在使用的标记。
+	var mark uint32
+	for {
+		m.next = m.next%65535 + 1
+		mark = m.markPrefix() | m.next
+		if m.templates[mark] == nil {
+			break
+		}
+	}
+	m.marks[key] = mark
+	m.templates[mark] = &template{fingerprint: f.Clone(), key: key, dials: 1}
 	return mark
+}
+
+func (m *Manager) releaseMark(mark uint32) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t := m.templates[mark]
+	t.dials--
+	if t.dials == 0 {
+		delete(m.marks, t.key)
+		delete(m.templates, mark)
+	}
 }
 
 func parseOptions(b []byte) map[byte][]byte {

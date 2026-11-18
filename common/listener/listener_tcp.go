@@ -162,7 +162,6 @@ func (l *Listener) handleFingerprintConnection(conn net.Conn, metadata adapter.I
 			return
 		}
 		if trusted {
-			conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 			hasHeader := true
 			if cfg.Optional {
 				var err error
@@ -173,6 +172,7 @@ func (l *Listener) handleFingerprintConnection(conn net.Conn, metadata adapter.I
 				}
 			}
 			if hasHeader {
+				conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 				source, destination, f, err := tcpfingerprint.ReadProxyHeader(conn)
 				if err != nil {
 					conn.Close()
