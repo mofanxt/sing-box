@@ -6,12 +6,12 @@ import (
 	"net/netip"
 	"time"
 
+	snellprotocol "github.com/mofanxt/sing-snell"
 	"github.com/sagernet/sing-box/common/interrupt"
 	"github.com/sagernet/sing-box/common/tlsspoof"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
-	snellprotocol "github.com/sagernet/sing-snell"
 	M "github.com/sagernet/sing/common/metadata"
 
 	"github.com/miekg/dns"
@@ -47,14 +47,16 @@ type InboundManager interface {
 
 type InboundContext struct {
 	TCPFingerprint *snellprotocol.TCPFingerprint
-	Inbound        string
-	InboundType    string
-	IPVersion      uint8
-	Network        string
-	Source         M.Socksaddr
-	Destination    M.Socksaddr
-	User           string
-	Outbound       string
+	// 受管逻辑连接的空样本也有效，不能用中转机的物理样本补齐。
+	TCPFingerprintAuthoritative bool
+	Inbound                     string
+	InboundType                 string
+	IPVersion                   uint8
+	Network                     string
+	Source                      M.Socksaddr
+	Destination                 M.Socksaddr
+	User                        string
+	Outbound                    string
 
 	// power report
 

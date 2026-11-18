@@ -12,10 +12,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"unsafe"
 
 	nfqueue "github.com/florianl/go-nfqueue/v2"
-	snell "github.com/sagernet/sing-snell"
+	snell "github.com/mofanxt/sing-snell"
 	M "github.com/sagernet/sing/common/metadata"
 	"golang.org/x/sys/unix"
 )
@@ -28,9 +27,6 @@ func (m *Manager) start() error {
 			return fmt.Errorf("claim fingerprint queue %d: %w", m.queue(), err)
 		}
 		m.closers = append(m.closers, owner.Close)
-		if err := m.calibrateWindowBuffers(); err != nil {
-			return err
-		}
 	}
 	for _, name := range m.options.CaptureInterfaces {
 		iface, err := net.InterfaceByName(name)
@@ -57,14 +53,9 @@ func (m *Manager) start() error {
 		go func() {
 			defer m.wg.Done()
 			b := make([]byte, 128)
-			for {
+			for m.ctx.Err() == nil {
 				n, _, err := unix.Recvfrom(fd, b, 0)
 				if err != nil {
-					select {
-					case <-m.ctx.Done():
-						return
-					default:
-					}
 					if err == unix.EAGAIN || err == unix.EINTR {
 						continue
 					}
@@ -143,7 +134,6 @@ func (m *Manager) start() error {
 			return fmt.Errorf("tcp fingerprint nft: %w: %s", err, out)
 		}
 	}
-	m.rulesOwned = true
 	m.closers = append(m.closers, func() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
@@ -169,23 +159,14 @@ func (m *Manager) ownsRules(ctx context.Context) bool {
 		actual == fmt.Sprintf("%snum %d bypass } }", prefix, m.queue())
 }
 
-func htons(v uint16) uint16 { return v<<8 | v>>8 }
+func htons(v uint16) uint16 {
+	var b [2]byte
+	binary.BigEndian.PutUint16(b[:], v)
+	return binary.NativeEndian.Uint16(b[:])
+}
 
 func (m *Manager) Control(f *snell.TCPFingerprint) (func(string, string, syscall.RawConn) error, func()) {
 	if m == nil || !m.options.Rewrite || f == nil || f.Validate() != nil {
-		return nil, nil
-	}
-	opts := parseOptions(f.Options)
-	var scale byte
-	if ws := opts[3]; ws != nil {
-		scale = ws[2]
-	}
-	// 使用本机握手校准值，避免不同tcp_rmem下缓冲大小与缩放比例不一致。
-	requested, ok := m.windowBuffers[scale]
-	if !ok {
-		m.mu.Lock()
-		m.skipped++
-		m.mu.Unlock()
 		return nil, nil
 	}
 	mark := m.templateMark(f)
@@ -198,22 +179,6 @@ func (m *Manager) Control(f *snell.TCPFingerprint) (func(string, string, syscall
 		}
 		var inner error
 		err := raw.Control(func(fd uintptr) {
-			inner = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF, requested)
-			if inner != nil {
-				return
-			}
-			actual, e := unix.GetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF)
-			if e != nil {
-				inner = e
-				return
-			}
-			// 小缓冲转发机使用逐socket权限接口，避免修改整机rmem_max。
-			if actual < requested*2 {
-				inner = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUFFORCE, requested)
-				if inner != nil {
-					return
-				}
-			}
 			inner = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, int(mark))
 		})
 		if err != nil {
@@ -221,64 +186,4 @@ func (m *Manager) Control(f *snell.TCPFingerprint) (func(string, string, syscall
 		}
 		return inner
 	}, func() { m.releaseMark(mark) }
-}
-
-// 启动时仅连接本机回环，最多申请16MiB的逐socket缓冲；不修改全局sysctl。
-func (m *Manager) calibrateWindowBuffers() error {
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		return fmt.Errorf("calibrate TCP window: %w", err)
-	}
-	defer listener.Close()
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			conn.Close()
-		}
-	}()
-	m.windowBuffers = make(map[byte]int)
-	for requested := 1 << 15; requested <= 1<<24; requested <<= 1 {
-		d := net.Dialer{Timeout: time.Second, Control: func(_, _ string, raw syscall.RawConn) error {
-			var setErr error
-			if err := raw.Control(func(fd uintptr) {
-				setErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUFFORCE, requested)
-			}); err != nil {
-				return err
-			}
-			return setErr
-		}}
-		conn, err := d.DialContext(m.ctx, "tcp4", listener.Addr().String())
-		if err != nil {
-			return fmt.Errorf("calibrate TCP window: %w", err)
-		}
-		raw, err := conn.(*net.TCPConn).SyscallConn()
-		if err != nil {
-			conn.Close()
-			return err
-		}
-		var info *unix.TCPInfo
-		var infoErr error
-		err = raw.Control(func(fd uintptr) { info, infoErr = unix.GetsockoptTCPInfo(int(fd), unix.IPPROTO_TCP, unix.TCP_INFO) })
-		conn.Close()
-		if err != nil {
-			return err
-		}
-		if infoErr != nil {
-			return infoErr
-		}
-		// TCP_INFO的第6字节为内核位域，x/sys结构体没有公开该字段。
-		bits := (*[8]byte)(unsafe.Pointer(info))[6]
-		scale := bits >> 4
-		if binary.NativeEndian.Uint16([]byte{1, 0}) != 1 {
-			scale = bits & 15
-		}
-		if _, exists := m.windowBuffers[scale]; !exists {
-			m.windowBuffers[scale] = requested
-		}
-	}
-	m.logger.Info("tcp fingerprint: calibrated window scales ", fmt.Sprint(m.windowBuffers))
-	return nil
 }

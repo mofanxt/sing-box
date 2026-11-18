@@ -358,6 +358,9 @@ func (d *DefaultDialer) DialParallelInterface(ctx context.Context, network strin
 	if strategy == nil {
 		return d.DialContext(ctx, network, address)
 	}
+	if d.fingerprint != nil && N.NetworkName(network) == N.NetworkTCP {
+		return nil, E.New("tcp fingerprint conflicts with route network_strategy")
+	}
 	if len(interfaceType) == 0 {
 		interfaceType = d.networkType
 	}

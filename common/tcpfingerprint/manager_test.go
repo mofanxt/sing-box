@@ -2,13 +2,16 @@ package tcpfingerprint
 
 import (
 	"container/list"
+	"context"
 	"encoding/binary"
+	"errors"
 	"net/netip"
 	"testing"
 	"time"
 
+	snell "github.com/mofanxt/sing-snell"
 	"github.com/sagernet/sing-box/option"
-	snell "github.com/sagernet/sing-snell"
+	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 )
 
@@ -278,5 +281,36 @@ func TestTemplateDialLifetime(t *testing.T) {
 			t.Fatal("slot or mark prefix lost")
 		}
 		m.releaseMark(mark)
+	}
+}
+
+func TestCloseWaitsForReadersAndReportsAllErrors(t *testing.T) {
+	m, err := New(context.Background(), option.TCPFingerprintOptions{Rewrite: true}, logger.NOP())
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	m.wg.Add(1)
+	go func() { defer m.wg.Done(); <-m.ctx.Done(); close(done) }()
+	first, second := errors.New("first"), errors.New("second")
+	m.closers = []func() error{func() error { return first }, func() error {
+		select {
+		case <-done:
+		default:
+			t.Error("fd closed before reader exited")
+		}
+		return second
+	}}
+	err = m.Close()
+	if !errors.Is(err, first) || !errors.Is(err, second) {
+		t.Fatalf("missing cleanup error: %v", err)
+	}
+}
+
+func TestRewriteKeepsKernelWindowScaling(t *testing.T) {
+	f := appleFP()
+	f.Options = []byte{2, 4, 5, 180}
+	if _, err := Rewrite(linuxSYN(), f); err == nil {
+		t.Fatal("removed native window scaling")
 	}
 }

@@ -2,9 +2,10 @@ package tcpfingerprint
 
 import (
 	"bytes"
-	M "github.com/sagernet/sing/common/metadata"
 	"reflect"
 	"testing"
+
+	M "github.com/sagernet/sing/common/metadata"
 )
 
 func TestProxyHeaderIsolation(t *testing.T) {
@@ -52,5 +53,27 @@ func TestEmptyProxyFingerprint(t *testing.T) {
 	b[15] += 3
 	if _, _, _, err = ReadProxyHeader(bytes.NewReader(b)); err == nil {
 		t.Fatal("duplicate empty TLV accepted")
+	}
+}
+
+func TestProxyIPv6WithoutFingerprint(t *testing.T) {
+	s, d := M.ParseSocksaddr("[2001:db8::1]:3456"), M.ParseSocksaddr("[2001:db8::2]:443")
+	b, err := ProxyHeader(s, d, appleFP())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b) != 52 || b[13] != 0x21 {
+		t.Fatalf("invalid INET6 header %x", b)
+	}
+	r := bytes.NewReader(append(b, 42))
+	src, dst, f, err := ReadProxyHeader(r)
+	if err != nil || src != s || dst != d || f != nil || r.Len() != 1 {
+		t.Fatalf("IPv6 round trip %v %v %v %v", src, dst, f, err)
+	}
+	for _, n := range []int{0, 12, 35} {
+		b[15] = byte(n)
+		if _, _, _, err = ReadProxyHeader(bytes.NewReader(b)); err == nil {
+			t.Fatalf("accepted %d-byte IPv6 header", n)
+		}
 	}
 }

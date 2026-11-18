@@ -36,8 +36,9 @@ type myUpstreamHandlerWrapper struct {
 func (w *myUpstreamHandlerWrapper) NewConnectionEx(ctx context.Context, conn net.Conn, source M.Socksaddr, destination M.Socksaddr, onClose N.CloseHandlerFunc) {
 	myMetadata := w.metadata
 	// 在协议解析及多路复用之前保留入口已验证的物理连接特征。
-	if original := ContextFrom(ctx); original != nil && original.TCPFingerprint != nil {
+	if original := ContextFrom(ctx); original != nil && (original.TCPFingerprint != nil || original.TCPFingerprintAuthoritative) {
 		myMetadata.TCPFingerprint = original.TCPFingerprint.Clone()
+		myMetadata.TCPFingerprintAuthoritative = original.TCPFingerprintAuthoritative
 		myMetadata.OriginDestination = original.OriginDestination
 	}
 	if source.IsValid() {

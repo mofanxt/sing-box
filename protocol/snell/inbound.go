@@ -5,6 +5,9 @@ import (
 	"net"
 	"os"
 
+	snellprotocol "github.com/mofanxt/sing-snell"
+	"github.com/mofanxt/sing-snell/snellv5"
+	"github.com/mofanxt/sing-snell/snellv6"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/inbound"
 	"github.com/sagernet/sing-box/common/listener"
@@ -12,9 +15,6 @@ import (
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
-	snellprotocol "github.com/sagernet/sing-snell"
-	"github.com/sagernet/sing-snell/snellv5"
-	"github.com/sagernet/sing-snell/snellv6"
 	"github.com/sagernet/sing/common/auth"
 	E "github.com/sagernet/sing/common/exceptions"
 	F "github.com/sagernet/sing/common/format"
@@ -31,19 +31,21 @@ var _ adapter.TCPInjectableInbound = (*Inbound)(nil)
 
 type Inbound struct {
 	inbound.Adapter
-	router   adapter.ConnectionRouterEx
-	logger   logger.ContextLogger
-	listener *listener.Listener
-	service  snellprotocol.Service
-	users    []option.SnellUser
+	router             adapter.ConnectionRouterEx
+	logger             logger.ContextLogger
+	listener           *listener.Listener
+	service            snellprotocol.Service
+	users              []option.SnellUser
+	managedFingerprint bool
 }
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.SnellInboundOptions) (adapter.Inbound, error) {
 	inbound := &Inbound{
-		Adapter: inbound.NewAdapter(C.TypeSnell, tag),
-		router:  uot.NewRouter(router, logger),
-		logger:  logger,
-		users:   options.Users,
+		Adapter:            inbound.NewAdapter(C.TypeSnell, tag),
+		router:             uot.NewRouter(router, logger),
+		logger:             logger,
+		users:              options.Users,
+		managedFingerprint: options.Version == 6 && options.V6Options.TCPFingerprint,
 	}
 	var userList []int
 	var keyList [][]byte
@@ -167,8 +169,10 @@ func (h *Inbound) NewPacketConnectionEx(ctx context.Context, conn N.PacketConn, 
 }
 
 func (h *Inbound) newConnection(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {
-	if f := snellprotocol.TCPFingerprintFromContext(ctx); f != nil {
-		metadata.TCPFingerprint = f
+	if h.managedFingerprint {
+		// 受管入口只接受逻辑请求的样本，空值禁止路由阶段再次查询物理连接。
+		metadata.TCPFingerprint = snellprotocol.TCPFingerprintFromContext(ctx)
+		metadata.TCPFingerprintAuthoritative = true
 	}
 	ctx = adapter.WithContext(ctx, &metadata)
 	metadata.Inbound = h.Tag()

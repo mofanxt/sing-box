@@ -4,13 +4,14 @@ import (
 	"container/list"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
+	snell "github.com/mofanxt/sing-snell"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/option"
-	snell "github.com/sagernet/sing-snell"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 )
@@ -52,10 +53,8 @@ type Manager struct {
 	cache                                 map[string]*list.Element
 	templates                             map[uint32]*template
 	marks                                 map[string]uint32
-	windowBuffers                         map[byte]int
 	next                                  uint32
 	closers                               []func() error
-	rulesOwned                            bool
 	wg                                    sync.WaitGroup
 	captured, matched, rewritten, skipped uint64
 }
@@ -76,8 +75,7 @@ func (m *Manager) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 		return nil
 	}
 	if err := m.start(); err != nil {
-		m.Close()
-		return err
+		return errors.Join(err, m.Close())
 	}
 	scope.Add(m.Close)
 	return nil
@@ -85,15 +83,17 @@ func (m *Manager) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 
 func (m *Manager) Close() error {
 	m.cancel()
+	// 等读取协程退出后再释放 fd，避免描述符编号被复用。
+	m.wg.Wait()
+	var closeErr error
 	for i := len(m.closers) - 1; i >= 0; i-- {
-		_ = m.closers[i]()
+		closeErr = errors.Join(closeErr, m.closers[i]())
 	}
 	m.closers = nil
-	m.wg.Wait()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.logger.Info("tcp fingerprint: captured=", m.captured, " matched=", m.matched, " rewritten=", m.rewritten, " skipped=", m.skipped)
-	return nil
+	return closeErr
 }
 
 func (m *Manager) RewriteEnabled() bool { return m.options.Rewrite }
@@ -314,6 +314,9 @@ func Rewrite(p []byte, f *snell.TCPFingerprint) ([]byte, error) {
 	old := parseOptions(p[40 : 20+int(p[32]>>4)*4])
 	opts := append([]byte(nil), f.Options...)
 	desired := parseOptions(opts)
+	if old[3] != nil && desired[3] == nil {
+		return nil, fmt.Errorf("kernel window scale mismatch")
+	}
 	for _, k := range []byte{2, 3, 4, 8} {
 		v, ok := desired[k]
 		if !ok {

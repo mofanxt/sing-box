@@ -5,6 +5,7 @@ package tcpfingerprint
 import (
 	"bufio"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
@@ -80,7 +81,7 @@ func TestExitCrashRecovery(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	m, err := New(ctx, option.TCPFingerprintOptions{Rewrite: true, Queue: 19518}, logger.NOP())
+	m, err := New(ctx, option.TCPFingerprintOptions{CaptureInterfaces: []string{"lo"}, Rewrite: true, Queue: 19518}, logger.NOP())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +126,9 @@ func TestExitCrashRecovery(t *testing.T) {
 	if !m.ownsRules(ctx) {
 		t.Fatal("rules missing after restart")
 	}
-	m.Close()
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if exec.Command("nft", "list", "table", "inet", m.tableName()).Run() == nil {
 		t.Fatal("cleanup left table")
 	}
@@ -137,5 +140,28 @@ func TestExitCrashRecovery(t *testing.T) {
 	foreign.Close()
 	if err == nil || exec.Command("nft", "list", "table", "inet", m.tableName()).Run() != nil {
 		t.Fatal("foreign table not preserved")
+	}
+	// 运行期间表内容变化时，保留外部对象，并向调用方报告清理失败。
+	checked, _ := New(ctx, option.TCPFingerprintOptions{Rewrite: true, Queue: 19519}, logger.NOP())
+	if err := checked.start(); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := exec.Command("nft", "add", "chain", "inet", checked.tableName(), "foreign").CombinedOutput(); err != nil {
+		t.Fatalf("%s: %v", b, err)
+	}
+	if err := checked.Close(); err == nil {
+		t.Fatal("missing nft cleanup error")
+	}
+	if err := exec.Command("nft", "list", "chain", "inet", checked.tableName(), "foreign").Run(); err != nil {
+		t.Fatal(err)
+	}
+
+}
+
+func TestPacketProtocolInNetworkOrder(t *testing.T) {
+	var b [2]byte
+	binary.NativeEndian.PutUint16(b[:], htons(0x0800))
+	if b != [2]byte{0x08, 0} {
+		t.Fatalf("invalid ETH_P_IP: %x", b)
 	}
 }

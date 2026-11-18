@@ -8,7 +8,7 @@ import (
 	"io"
 	"net/netip"
 
-	snell "github.com/sagernet/sing-snell"
+	snell "github.com/mofanxt/sing-snell"
 	M "github.com/sagernet/sing/common/metadata"
 )
 
@@ -16,17 +16,24 @@ var proxySignature = []byte("\r\n\r\n\x00\r\nQUIT\n")
 
 // ProxyHeader仅在显式配置的受管内部跳点使用，0xE0为应用私有TLV。
 func ProxyHeader(source, destination M.Socksaddr, f *snell.TCPFingerprint) ([]byte, error) {
-	if !source.IsIPv4() || !destination.IsIPv4() {
-		return nil, fmt.Errorf("fingerprint proxy header requires IPv4 endpoints")
+	source, destination = source.Unwrap(), destination.Unwrap()
+	var family byte
+	switch {
+	case source.IsIPv4() && destination.IsIPv4():
+		family = 0x11
+	case source.IsIPv6() && destination.IsIPv6():
+		family = 0x21
+		f = nil
+	default:
+		return nil, fmt.Errorf("fingerprint proxy header requires IP endpoints of the same family")
 	}
-	b := make([]byte, 28)
+	b := make([]byte, 16, 52)
 	copy(b, proxySignature)
-	b[12] = 0x21
-	b[13] = 0x11
-	copy(b[16:20], source.Addr.AsSlice())
-	copy(b[20:24], destination.Addr.AsSlice())
-	binary.BigEndian.PutUint16(b[24:26], source.Port)
-	binary.BigEndian.PutUint16(b[26:28], destination.Port)
+	b[12], b[13] = 0x21, family
+	b = append(b, source.Addr.AsSlice()...)
+	b = append(b, destination.Addr.AsSlice()...)
+	b = binary.BigEndian.AppendUint16(b, source.Port)
+	b = binary.BigEndian.AppendUint16(b, destination.Port)
 	if f != nil {
 		data, err := f.MarshalBinary()
 		if err != nil {
@@ -46,12 +53,17 @@ func ReadProxyHeader(r io.Reader) (source, destination M.Socksaddr, f *snell.TCP
 	if _, err = io.ReadFull(r, h); err != nil {
 		return
 	}
-	if !bytes.Equal(h[:12], proxySignature) || h[12] != 0x21 || h[13] != 0x11 {
+	if !bytes.Equal(h[:12], proxySignature) || h[12] != 0x21 || (h[13] != 0x11 && h[13] != 0x21) {
 		err = fmt.Errorf("unsupported fingerprint proxy header")
 		return
 	}
 	n := int(binary.BigEndian.Uint16(h[14:]))
-	if n < 12 || n > 1024 {
+	addressSize := 4
+	if h[13] == 0x21 {
+		addressSize = 16
+	}
+	ports := 2 * addressSize
+	if n < ports+4 || n > 1024 {
 		err = fmt.Errorf("fingerprint proxy header length out of bounds")
 		return
 	}
@@ -59,10 +71,12 @@ func ReadProxyHeader(r io.Reader) (source, destination M.Socksaddr, f *snell.TCP
 	if _, err = io.ReadFull(r, b); err != nil {
 		return
 	}
-	source = M.SocksaddrFrom(netip.AddrFrom4([4]byte(b[:4])), binary.BigEndian.Uint16(b[8:10]))
-	destination = M.SocksaddrFrom(netip.AddrFrom4([4]byte(b[4:8])), binary.BigEndian.Uint16(b[10:12]))
+	src, _ := netip.AddrFromSlice(b[:addressSize])
+	dst, _ := netip.AddrFromSlice(b[addressSize:ports])
+	source = M.SocksaddrFrom(src, binary.BigEndian.Uint16(b[ports:]))
+	destination = M.SocksaddrFrom(dst, binary.BigEndian.Uint16(b[ports+2:]))
 	seenFingerprint := false
-	for b = b[12:]; len(b) > 0; {
+	for b = b[ports+4:]; len(b) > 0; {
 		if len(b) < 3 {
 			err = io.ErrUnexpectedEOF
 			return
@@ -101,6 +115,9 @@ func ReadProxyHeader(r io.Reader) (source, destination M.Socksaddr, f *snell.TCP
 			}
 		}
 		b = b[n:]
+	}
+	if h[13] == 0x21 {
+		f = nil
 	}
 	return
 }

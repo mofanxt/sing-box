@@ -87,13 +87,14 @@ func (r *Router) routeConnection(ctx context.Context, conn net.Conn, metadata ad
 		injectable.NewConnection(ctx, conn, metadata, onClose)
 		return nil
 	}
-	if metadata.TCPFingerprint == nil {
+	if metadata.TCPFingerprint == nil && !metadata.TCPFingerprintAuthoritative {
 		// 旧协议适配器会重建metadata，保留当前物理连接已验证的采集值。
 		if original := adapter.ContextFrom(ctx); original != nil {
 			metadata.TCPFingerprint = original.TCPFingerprint.Clone()
+			metadata.TCPFingerprintAuthoritative = original.TCPFingerprintAuthoritative
 		}
 	}
-	if metadata.TCPFingerprint == nil {
+	if metadata.TCPFingerprint == nil && !metadata.TCPFingerprintAuthoritative {
 		if manager := service.FromContext[*tcpfingerprint.Manager](ctx); manager != nil {
 			metadata.TCPFingerprint = manager.Lookup(metadata.Source, metadata.Destination)
 		}

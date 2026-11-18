@@ -4,8 +4,9 @@ package tcpfingerprint
 
 import (
 	"fmt"
-	snell "github.com/sagernet/sing-snell"
 	"syscall"
+
+	snell "github.com/mofanxt/sing-snell"
 )
 
 func (m *Manager) start() error { return fmt.Errorf("TCP fingerprint capture/rewrite requires Linux") }
